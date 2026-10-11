@@ -26,7 +26,7 @@ import feed, selfupdate, appinstall, profiles, recipes, gallery, starters
 import vram_predict
 import wsl, vllm_ctl, vllm_registry, vllm_setup, vllm_job, vllm_hub, vllm_download
 import gguf, diag, backends, prebuilt, version, slots, slotctl, slotproc, builds, compat
-import mcp_server, piinstall, tts, logfiles, loadprog
+import mcp_server, piinstall, tts, logfiles, loadprog, gamemode
 from builder import BuildManager
 from embers import panel as embers_panel
 
@@ -851,6 +851,7 @@ def get_state(req):
     s["config_error"] = config.LOAD_ERROR
     s["version"] = version.VERSION
     s["slots"] = _slots_state(c)
+    s["game_mode"] = GAMEMODE.status()
     s["onboarding"] = {
         "server_bin_ok": bool(c.get("server_bin")) and os.path.exists(c["server_bin"]),
         "model_count": len(s["models"]),
@@ -1349,11 +1350,15 @@ def post_unload(req):
     return (200 if code == 200 else 400), res
 
 
-def post_unload_all(req):
+def _router_loaded_ids():
     st, data = router("/models")
-    loaded = [m["id"] for m in data.get("data", [])
-              if st == 200 and m.get("id") != "default"
-              and m.get("status", {}).get("value") in ("loaded", "loading", "sleeping")]
+    return [m["id"] for m in data.get("data", [])
+            if st == 200 and m.get("id") != "default"
+            and m.get("status", {}).get("value") in ("loaded", "loading", "sleeping")]
+
+
+def post_unload_all(req):
+    loaded = _router_loaded_ids()
     slotted = _slots_on()
     for mid in loaded:
         if slotted:
@@ -2002,6 +2007,10 @@ CONFIG_WRITABLE = {
     "slot_cap":                _v_int(slots.CAP_MIN, slots.CAP_MAX),
     "slot_headroom_mib":       _v_int(0, 32768),
     "slot_autoload":           _v_bool,
+    "game_mode":               _v_bool,
+    "game_mode_keep":          _v_dirs,     # model ids that stay loaded
+    "game_mode_games":         _v_dirs,     # extra game executables
+    "game_mode_restore":       _v_bool,
 }
 # what the router is started with: changing one restarts it (and unloads models)
 _POOL_KEYS = ("multi_model", "slot_cap", "slot_autoload")
@@ -2715,6 +2724,26 @@ def _proc_endpoints():
 
 
 stats.TRACKER.proc_source = _proc_endpoints
+
+
+def _game_loaded():
+    """Router models plus process-slot models that are up."""
+    loaded = _router_loaded_ids()
+    return loaded + [m for m in PROCS.status() if m not in loaded]
+
+
+def _game_unload(mid):
+    status, res = post_unload(Req({"model": mid}))
+    return status == 200 and res.get("success", True) is not False
+
+
+def _game_load(mid):
+    status, _ = post_load(Req({"model": mid}))
+    return status == 200
+
+
+# Game mode: server.main() starts its loop; it only looks at processes while on.
+GAMEMODE = gamemode.GameMode(cfg, gamemode.detect, _game_loaded, _game_unload, _game_load)
 embers_panel.MAIN_FN = lambda: SLOTS._main()   # Ask lists the pool's main model first
 
 

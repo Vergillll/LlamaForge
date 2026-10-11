@@ -460,6 +460,7 @@ def main():
         routes.embers_panel.SCHEDULER = EMBERS_SCHED   # the Embers tab's "run now" queues here
     except Exception as e:
         print(f"  WARNING: embers scheduler did not start ({type(e).__name__}: {e})")
+    routes.GAMEMODE.start()  # idle unless game_mode is on in Setup
     import threading
     threading.Thread(target=_router_startup, args=(c.get("auto_load_model"),),
                      daemon=True, name="router-startup").start()
