@@ -89,7 +89,7 @@ else
 try: print(json.load(open(sys.argv[1]))["tag_name"])
 except Exception: pass' "$TMP/latest.json" 2>/dev/null)"
   fi
-  [ -n "$REF" ] || die "could not find the latest LlamaForge release (GitHub unreachable or rate-limited). Retry in a few minutes, or pin one: LLAMAFORGE_REF=v0.16.0"
+  [ -n "$REF" ] || die "could not find the latest LlamaForge release (GitHub unreachable or rate-limited). Retry in a few minutes, or pin one: LLAMAFORGE_REF=v0.16.1"
   case "$REF" in v[0-9]*) KIND=tags ;; *) KIND=heads ;; esac
   VERSION="$REF"
   ARCHIVE="$TMP/llamaforge.tar.gz"
