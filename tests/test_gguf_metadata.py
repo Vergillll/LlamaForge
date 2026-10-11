@@ -79,6 +79,25 @@ class TestMetadata(unittest.TestCase):
         self.assertEqual(m["context_length"], 32768)
         self.assertNotIn("tokenizer.chat_template", m)
 
+    def _tmpl(self, text):
+        return gguf.metadata(self._make([_kv_str("general.architecture", "qwen3"),
+                                         _kv_str("tokenizer.chat_template", text)]))
+
+    def test_a_template_with_a_thinking_switch(self):
+        m = self._tmpl("{%- if enable_thinking is defined and enable_thinking is false %}<think>\n\n</think>{% endif %}")
+        self.assertEqual(m["thinking"], "switch")
+        self.assertNotIn("chat_template", m)          # the template itself is never returned
+
+    def test_reasoning_effort_counts_as_a_switch(self):
+        self.assertEqual(self._tmpl("Reasoning: {{ reasoning_effort }}")["thinking"], "switch")
+
+    def test_think_tags_without_a_switch(self):
+        self.assertEqual(self._tmpl("{{ '<think>\n' }}{{ content }}")["thinking"], "tags")
+        self.assertEqual(self._tmpl("[THINK]{{ m.thinking }}[/THINK]")["thinking"], "tags")   # Mistral
+
+    def test_a_plain_template_says_nothing(self):
+        self.assertNotIn("thinking", self._tmpl("{% for m in messages %}{{ m.content }}{% endfor %}"))
+
     def test_omits_missing_fields(self):
         p = self._make([_kv_str("general.architecture", "gemma")])
         m = gguf.metadata(p)

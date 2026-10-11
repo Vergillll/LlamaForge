@@ -328,6 +328,7 @@
 :root[data-skin="stowage"] .seg{border-radius:0;background:transparent}
 :root[data-skin="stowage"] .seg.on{background:var(--c-main);box-shadow:1px 0 0 var(--c-main)}
 :root[data-skin="stowage"] .seg.hot{background:var(--c-off);box-shadow:1px 0 0 var(--c-off)}
+:root[data-skin="stowage"] .tseg .qbtn[aria-pressed="true"]{background:var(--c-main);border-color:var(--c-main);color:#ffffff}
 :root[data-skin="stowage"] .token-scale{font-family:var(--sans);letter-spacing:0;border-radius:0;padding:12px 16px;border-color:var(--hair-hi)}
 :root[data-skin="stowage"] .token-scale-fact{font-family:var(--cond);font-size:18px;font-weight:700;letter-spacing:.03em;text-transform:uppercase}
 
