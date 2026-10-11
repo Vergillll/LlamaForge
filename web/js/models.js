@@ -126,7 +126,7 @@ function knobGroups(m, schema) {
 function editorLive(m) {
   return m.backend === "vllm"
     ? `${diagBlock(m)}${modelMeta(m)}`
-    : `${diagBlock(m)}${metaBlock(m)}${modelMeta(m)}${buildBar(m)}${presetBar(m)}${autoTuneBar(m)}`;
+    : `${diagBlock(m)}${metaBlock(m)}${modelMeta(m)}${buildBar(m)}${thinkBar(m)}${visionBar(m)}${presetBar(m)}${autoTuneBar(m)}`;
 }
 function editorButtons(m) {
   if (m.backend === "vllm") {
@@ -240,16 +240,32 @@ function rowHead(m, showBackend) {
         <span class="fav ${isFav?"on":""}" data-fav="${esc(m.id)}" title="${isFav?"unfavorite":"favorite"}">&starf;</span>
         <span class="mid" title="${esc(m.id)}">${esc(m.id)}${beTag}${slots.chip(m)}${buildTag(m)}${vis?'<span class="tag vis">vision</span>':''}${!m.in_ini?'<span class="tag">auto</span>':''}${m.endpoint?`<span class="tag ep" data-ep="${esc(m.endpoint)}" title="click to copy endpoint">${esc(m.endpoint.replace('http://',''))}</span>`:''}</span>
         <span class="ctxpill"><span class="k">CTX</span> ${esc(m.eff_ctx)}</span>
-        <span class="stat ${loaded?"loaded":""}" style="${stuckSecs>=20?"color:var(--red)":""}">${m.failed?"FAILED":esc(m.status)}${stuckSecs>=20?` (${stuckSecs}s, check log)`:""}</span>
+        ${statCell(m, loaded, stuckSecs)}
         <span class="qbtns">${quickBtn(m)}</span>
         <span class="chev">&#9654;</span>`;
+}
+// A loading row shows the router's real progress when it streams it (/models/sse);
+// older routers send none, so the stopwatch ("check log" after 20 s) stays.
+const STAGE_LABEL = { text_model: "weights", spec_model: "draft", mmproj_model: "vision" };
+function loadPct(m) {
+  const p = m.status === "loading" && !m.failed && m.load_progress;
+  return p && Number.isFinite(p.pct) ? Math.max(0, Math.min(100, p.pct)) : null;
+}
+function statCell(m, loaded, stuckSecs) {
+  const pct = loadPct(m);
+  if (pct !== null) {
+    const stage = STAGE_LABEL[m.load_progress.stage] || "model";
+    return `<span class="stat" title="loading ${esc(stage)}: ${pct}%">loading ${pct}%`
+      + `<span class="lbar" role="progressbar" aria-label="load progress" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><i style="width:${pct}%"></i></span></span>`;
+  }
+  return `<span class="stat ${loaded?"loaded":""}" style="${stuckSecs>=20?"color:var(--red)":""}">${m.failed?"FAILED":esc(m.status)}${stuckSecs>=20?` (${stuckSecs}s, check log)`:""}</span>`;
 }
 // Everything rowHead() reads. Compared as a string so an unchanged row is left
 // in the DOM untouched - which is what keeps focus, selection and scroll alive.
 function headSig(m, cols, showBackend) {
   return JSON.stringify([m.id, m.status, m.failed, m.backend, m.endpoint, m.build, m.eff_ctx,
     m.modalities, m.in_ini, favs.has(m.id), compareMode, cmpSet.has(m.id),
-    loadQ.findIndex(j => j.id === m.id), loadingSecs(m) >= 20, cols, showBackend,
+    loadQ.findIndex(j => j.id === m.id), loadingSecs(m) >= 20, loadPct(m), cols, showBackend,
     slots.chipSig(m)]);
 }
 // Keyed so only a different model, backend or schema rebuilds the knob grid.
@@ -682,6 +698,76 @@ async function setBuild(sel) {
   await refresh(true);
 }
 
+/* ---------- thinking + vision -----------------------------------------------
+   One-click switches over knobs that already exist: Thinking writes llama.cpp's
+   reasoning / reasoning-budget (Auto and Unlimited remove the key, so the
+   router's default applies); Vision parks the mmproj line server-side. Both
+   apply at once - a loaded model is unloaded so its next load picks it up. */
+const hasKnob = key => !!(S.SCHEMA && (S.SCHEMA.groups || []).some(g => g.knobs.some(k => k.key === key)));
+const THINK_MODES = [["", "Auto"], ["on", "On"], ["off", "Off"]];
+const THINK_BUDGETS = [["", "unlimited"], ["512", "512 tokens"], ["2048", "2k tokens"], ["8192", "8k tokens"]];
+function thinkBar(m) {
+  if (!m.in_ini || !hasKnob("reasoning")) return "";
+  const s = m.settings || {}, mode = s.reasoning || "", budget = s["reasoning-budget"] || "";
+  const meta = metaCache[m.id], kind = meta && meta.thinking;
+  // a template with no reasoning markers has nothing to switch; still shown if
+  // something was set, so it can be put back
+  if (meta && Object.keys(meta).length && !kind && !mode && !budget) return "";
+  const segs = THINK_MODES.map(([v, label]) =>
+    `<button class="qbtn" data-think-mode="${v}" data-think="${esc(m.id)}" aria-pressed="${mode === v}">${label}</button>`).join("");
+  let budgetSel = "";
+  if (hasKnob("reasoning-budget")) {
+    const opts = THINK_BUDGETS.slice();
+    const odd = {"0": "0 · no thinking", "-1": "unlimited (-1)"};   // llama.cpp's two special values
+    if (budget && !opts.some(([v]) => v === budget)) opts.push([budget, odd[budget] || `${budget} tokens`]);
+    budgetSel = `<select data-think-budget="${esc(m.id)}" title="most tokens it may think before answering"${mode === "off" ? " disabled" : ""}>`
+      + opts.map(([v, label]) => `<option value="${esc(v)}"${v === budget ? " selected" : ""}>${esc(label)}</option>`).join("") + `</select>`;
+  }
+  const hint = kind === "switch" ? "Its chat template has a thinking switch, so Off really turns it off."
+    : kind === "tags" ? "Its template shows thinking but has no switch: Off may not stop a model trained to always think."
+    : "";
+  return `<div class="tunebar">
+    <span class="tunebar-label" title="llama.cpp's --reasoning and --reasoning-budget. Auto lets the chat template decide.">Thinking</span>
+    <span class="tseg" role="group" aria-label="thinking">${segs}</span>${budgetSel}
+  </div>${hint ? `<div class="slotnote dim">${esc(hint)}</div>` : ""}`;
+}
+function visionBar(m) {
+  if (!m.in_ini) return "";
+  const on = !!(m.settings || {}).mmproj;
+  if (!on && !m.vision_off) return "";
+  const seg = (v, label) => `<button class="qbtn" data-vision="${esc(m.id)}" data-vision-on="${v}" aria-pressed="${on === v}">${label}</button>`;
+  return `<div class="tunebar">
+    <span class="tunebar-label" title="Loads the model's vision projector (mmproj). Off keeps the file on disk and frees its VRAM.">Vision</span>
+    <span class="tseg" role="group" aria-label="vision">${seg(true, "On")}${seg(false, "Off")}</span>
+  </div>${on ? "" : `<div class="slotnote dim">Off: text only. The projector file is kept; turn it back on any time.</div>`}`;
+}
+async function applyToggle(row, id, label, call) {
+  const m = modelRows().find(x => x.id === id);
+  const up = m && (m.status === "loaded" || m.status === "loading" || m.status === "sleeping");
+  if (up && !(await askYes(`Changing this unloads ${id}; its next load uses the new setting.`, {title: label, ok: "Change and unload"}))) {
+    if (row) row._live = null;                         // put the controls back
+    renderModels(); return;
+  }
+  const msg = row && $("[data-msg]", row);
+  if (msg) { msg.className = "msg work"; msg.textContent = "writing models.ini..."; }
+  let r;
+  try { r = await call(); } catch (e) { r = {error: String(e)}; }
+  if (r && r.ok) {
+    if (msg) { msg.className = "msg ok"; msg.textContent = r.was_running ? `${label.toLowerCase()} saved - unloaded to apply` : `${label.toLowerCase()} saved - used on the next load`; }
+    delete diagCache[id]; invalidateKnobs(); slots.forget(id);
+    toast(`${label} saved`, "ok");
+  } else {
+    if (msg) { msg.className = "msg err"; msg.textContent = (r && r.error) || "failed"; }
+    toast((r && r.error) || `could not change ${label.toLowerCase()}`, "err");
+  }
+  if (row) row._live = null;
+  await refresh(true);
+}
+const saveThinking = (row, id, settings) =>
+  applyToggle(row, id, "Thinking", () => api("/api/save", {model: id, settings}));
+const saveVision = (row, id, on) =>
+  applyToggle(row, id, "Vision", () => api("/api/model/vision", {model: id, on}));
+
 /* ---------- autotune bar ---------- */
 function autoTuneBar(m) {
   return `<div class="tunebar">
@@ -779,6 +865,13 @@ function moveSel(delta) {
 }
 
 /* ---------- refresh ---------- */
+// The tab polls every 4 s; while the router streams a load's progress, a 1 s
+// follow-up keeps the bar moving. One timer at a time; it stops with the load.
+let fastPoll = null;
+function pollFasterWhileLoading() {
+  if (fastPoll || !modelRows().some(m => loadPct(m) !== null)) return;
+  fastPoll = setTimeout(() => { fastPoll = null; if (activeTab() === "models") refresh(true); }, 1000);
+}
 export async function refresh(silent) {
   try {
     // recover the knob schema without a reload once config.json is fixed
@@ -787,6 +880,7 @@ export async function refresh(silent) {
     S.STATE = s;
     lastGpus = s.gpus;
     renderModels();
+    pollFasterWhileLoading();
     updateCmpRun();
     emit("state", s);
     const vlog = $("#vllm-log-details");
@@ -834,6 +928,8 @@ export function initModels() {
   document.addEventListener("change", e => {
     const pick = e.target.closest("#view-models [data-build-pick]");
     if (pick) setBuild(pick);
+    const tb = e.target.closest("#view-models [data-think-budget]");
+    if (tb) saveThinking(tb.closest(".row"), tb.dataset.thinkBudget, {"reasoning-budget": tb.value});
   });
 
   document.addEventListener("input", e => {
@@ -940,6 +1036,21 @@ export function initModels() {
     }
     const pSave = e.target.closest("[data-preset-save]");
     if (pSave) { e.stopPropagation(); await savePresetFrom(pSave.dataset.presetSave); return; }
+    // thinking / vision switches
+    const tMode = e.target.closest("#view-models [data-think-mode]");
+    if (tMode) {
+      e.stopPropagation();
+      if (tMode.getAttribute("aria-pressed") !== "true")
+        await saveThinking(tMode.closest(".row"), tMode.dataset.think, {reasoning: tMode.dataset.thinkMode});
+      return;
+    }
+    const vis = e.target.closest("#view-models [data-vision]");
+    if (vis) {
+      e.stopPropagation();
+      if (vis.getAttribute("aria-pressed") !== "true")
+        await saveVision(vis.closest(".row"), vis.dataset.vision, vis.dataset.visionOn === "true");
+      return;
+    }
     // autotune
     const tRef = e.target.closest("[data-tune-refine]");
     if (tRef) { e.stopPropagation(); await handleTuneRefine(tRef.dataset.tuneRefine); return; }

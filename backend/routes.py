@@ -26,7 +26,7 @@ import feed, selfupdate, appinstall, profiles, recipes, gallery, starters
 import vram_predict
 import wsl, vllm_ctl, vllm_registry, vllm_setup, vllm_job, vllm_hub, vllm_download
 import gguf, diag, backends, prebuilt, version, slots, slotctl, slotproc, builds, compat
-import mcp_server, piinstall, tts, logfiles
+import mcp_server, piinstall, tts, logfiles, loadprog
 from builder import BuildManager
 from embers import panel as embers_panel
 
@@ -219,6 +219,16 @@ def router(path, method="GET", body=None, timeout=30):
         return 599, {"error": str(e)}
 
 
+def _sse_target():
+    c = cfg()
+    key = network_policy.effective_key(c)
+    return (f"http://127.0.0.1:{c['router_port']}/models/sse",
+            {"Authorization": "Bearer " + key} if key else {})
+
+
+LOADPROG = loadprog.LoadProgress(_sse_target)
+
+
 def gpus():
     return hardware.detect_gpus_verbose() if hasattr(hardware, "detect_gpus_verbose") else _gpu_telemetry()
 
@@ -345,6 +355,11 @@ def model_state():
                            "settings": ini[name], "eff_ctx": ini[name].get("ctx-size", glob.get("ctx-size", "?")),
                            "file_gib": _file_gib(ini[name].get("model"))})
     _overlay_procs(models)
+    parked = config.vision_parked()
+    for m in models:
+        if m["id"] in parked:
+            m["vision_off"] = True    # projector parked; the editor offers it back
+    LOADPROG.attach(models)
     models.sort(key=lambda m: (m["status"] != "loaded", m["id"]))
     return {"models": models, "global": glob}
 
@@ -743,10 +758,15 @@ def _clean_settings(updates):
 def _persist_scanned_entries(entries):
     """Persist scanner fields and reconcile only LlamaForge-owned MTP keys."""
     existing = config.read_sections()
+    parked = config.vision_parked()
     for e in entries:
+        mmproj = e.get("mmproj") or None
+        if e["id"] in parked:                 # vision turned off: keep it off
+            config.repark_vision(e["id"], mmproj)
+            mmproj = None
         keys = {
             "model": e["model"],
-            "mmproj": e.get("mmproj") or None,
+            "mmproj": mmproj,
             "embeddings": "true" if e.get("embeddings") else None,
         }
         desired_mtp = {
@@ -1240,6 +1260,7 @@ def post_model_delete(req):
         if backend.name in config.PRESET_ENGINES:
             _reconcile_preset_binding(mid, {}, backend.name)
             config.prune_binding(mid, backend.name)
+            config.prune_vision(mid, backend.name)
     return (200 if ok else 500), {"ok": ok, "error": err, "backend": backend.name}
 
 
@@ -1268,6 +1289,7 @@ def post_model_unregister(req):
         raise ApiError(409, "model registry changed; reload and try again")
     _reconcile_preset_binding(mid, {}, backend.name)
     config.prune_binding(mid, backend.name)
+    config.prune_vision(mid, backend.name)
     router("/models?reload=1")
     return 200, {"ok": True, "backend": backend.name}
 
@@ -1279,6 +1301,21 @@ def post_save(req):
     clean = _clean_settings(req.body.get("settings", {}))
     running = _apply_knobs_and_reload(mid, clean)
     return 200, {"ok": True, "was_running": running}
+
+
+def post_model_vision(req):
+    """Vision on/off for one model; the projector file is never touched."""
+    mid, on = req.body.get("model"), req.body.get("on")
+    if not mid or not isinstance(mid, str) or mid == "*":
+        raise ApiError(400, "a model id is required")
+    if not isinstance(on, bool):
+        raise ApiError(400, "on must be true or false")
+    try:
+        out = config.set_vision(mid, on)
+    except ValueError as e:
+        raise ApiError(400, str(e))
+    running = _apply_knobs_and_reload(mid, {})
+    return 200, {"ok": True, "vision": out["vision"], "was_running": running}
 
 
 def post_load(req):
@@ -1782,6 +1819,7 @@ def post_scan_prune(req):
             engine = cfg().get("active_engine", "llamacpp")
             _reconcile_preset_binding(mid, {}, engine)
             config.prune_binding(mid, engine)
+            config.prune_vision(mid, engine)
     if removed:
         router("/models?reload=1")
     return 200, {"removed": removed}
@@ -2580,6 +2618,7 @@ POST_ROUTES = {
     "/api/models/unregister":   post_model_unregister,
     # llama.cpp-specific aliases
     "/api/save":                post_save,
+    "/api/model/vision":        post_model_vision,
     "/api/load":                post_load,
     "/api/unload":              post_unload,
     "/api/unload_all":          post_unload_all,

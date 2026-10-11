@@ -160,7 +160,7 @@ _META_STR_KEYS = {"general.architecture", "general.name", "general.size_label",
 _META_STR_SUFFIX = (".rope.scaling.type",)   # e.g. llama.rope.scaling.type = "yarn"
 
 
-def _read_header_kv(f, n_kv, arrays=()):
+def _read_header_kv(f, n_kv, arrays=(), strings=()):
     """Collect scalar KVs (all cheap) + a small allowlist of strings into a dict.
     Numeric arrays whose key ends with one of `arrays` (per-layer facts, one entry
     per block) are kept; every other array and unlisted string is seeked past."""
@@ -171,7 +171,7 @@ def _read_header_kv(f, n_kv, arrays=()):
         if vt in _SCALAR_SZ:                 # int/float/bool: 1-8 bytes, always keep
             kv[key] = _read_scalar(f, vt)
         elif vt == _STRING:
-            if key in _META_STR_KEYS or key.endswith(_META_STR_SUFFIX):
+            if key in _META_STR_KEYS or key in strings or key.endswith(_META_STR_SUFFIX):
                 kv[key] = _read_str(f)
             else:
                 _skip_str(f)
@@ -200,7 +200,7 @@ def metadata(path):
             n_kv = _u64(f)
             if n_kv > 1_000_000:
                 return None
-            kv = _read_header_kv(f, n_kv)
+            kv = _read_header_kv(f, n_kv, strings=("tokenizer.chat_template",))
     except Exception:
         return None
     arch = kv.get("general.architecture")
@@ -221,8 +221,27 @@ def metadata(path):
         "expert_used_count": a("expert_used_count"),
         "rope_freq_base":   a("rope.freq_base"),
         "rope_scaling":     a("rope.scaling.type"),
+        "thinking":         thinking_kind(kv.get("tokenizer.chat_template")),
     }
     return {k: v for k, v in out.items() if v is not None}
+
+
+# Template variables llama.cpp's --reasoning / --reasoning-effort feed: a template
+# that reads one can really turn thinking off (or down).
+_THINK_SWITCHES = ("enable_thinking", "reasoning_effort", "thinking_mode", "reasoning_mode")
+
+
+def thinking_kind(template):
+    """'switch' when the chat template has a thinking toggle, 'tags' when it only
+    handles <think> blocks (Off may not stop a model trained to always think),
+    None for a template with no sign of reasoning. Advice, not a guarantee."""
+    if not isinstance(template, str) or not template:
+        return None
+    if any(w in template for w in _THINK_SWITCHES):
+        return "switch"
+    if any(t in template for t in ("<think>", "[THINK]", "reasoning_content")):
+        return "tags"
+    return None
 
 
 def projector_info(path):

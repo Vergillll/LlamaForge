@@ -227,6 +227,8 @@ body.app{display:grid;grid-template-columns:var(--nav-w) 1fr;min-height:100vh;ma
 .ctxpill{font-size:11px;color:var(--amber-text);white-space:nowrap}.ctxpill .k{color:var(--dim)}
 .stat{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);min-width:74px;text-align:right}
 .stat.loaded{color:var(--green)}
+.stat .lbar{display:block;height:3px;margin-top:3px;background:var(--amber-tint);border-radius:2px;overflow:hidden}
+.stat .lbar i{display:block;height:100%;background:var(--amber);transition:width .25s ease-out}
 .chev{color:var(--dim);transition:transform .2s;font-size:12px}.row.open .chev{transform:rotate(90deg);color:var(--amber-text)}
 .edit{display:none;border-top:1px solid var(--hair);padding:16px 18px 18px}.row.open .edit{display:block}
 .toolbar{display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
@@ -360,6 +362,11 @@ button:disabled{opacity:.4;cursor:not-allowed}
 .presetbar .pchip .pbind{font-size:11px;color:var(--dim)}.presetbar .pchip:hover .pbind{color:var(--on-amber)}
 .presetbar .pchip.bound{border-color:var(--amber-text);background:var(--amber-tint)}.presetbar .pchip.bound .pbind{color:var(--amber-text)}
 .tunebar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.tseg{display:inline-flex}
+.tseg .qbtn{border-radius:0;margin-left:-1px}
+.tseg .qbtn:first-child{border-radius:var(--r-xs) 0 0 var(--r-xs);margin-left:0}
+.tseg .qbtn:last-child{border-radius:0 var(--r-xs) var(--r-xs) 0}
+.tunebar .tseg .qbtn[aria-pressed="true"]{background:var(--amber-tint);border-color:var(--amber);color:var(--amber-text);position:relative;cursor:default}
 .tunebar-label{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);cursor:help}
 .tunebar-results{margin-top:6px;font-size:11px;font-family:var(--mono);border:1px solid var(--hair);border-radius:var(--r-sm);padding:6px 8px}
 .tunebar-cand-header{display:flex;gap:8px;margin-bottom:4px;color:var(--dim);font-size:9px;letter-spacing:.08em;text-transform:uppercase}

@@ -53,6 +53,7 @@ DEFAULTS = {
     "presets":     {},                       # named knob sets: {name: {knob: value}}
     "profiles":    {},                       # {name: {model, backend, preset, engine}}
     "preset_bindings": {},                    # {model_id: preset_name} auto-applied on bind/edit
+    "vision_off":     {},                     # {engine: {model_id: mmproj path}} vision turned off
     "mtp_auto_owned": {},                     # {engine: {model_id: {key: value}}}
     "preset_binding_snapshots": {},           # {engine: {model_id: {knob: owned_value}}}
     "ui_mode":     "lite",                    # "lite" (curated knobs) or "advanced" (all ~220)
@@ -645,6 +646,61 @@ def prune_binding(model_id, engine=None):
     """Drop a deleted model's binding. Alias of unbind_preset for call-site
     clarity."""
     return unbind_preset(model_id, engine)
+
+# ---------------- vision on/off (the projector file stays put) ----------------
+# llama-server builds a vision model whenever mmproj has a path, so --no-mmproj
+# can't override an explicit line: off removes the line and parks its path here.
+
+def vision_parked(engine=None):
+    """{model_id: parked mmproj path} for one engine."""
+    return _scoped_preset_map(load(), "vision_off", engine)
+
+def _set_parked(model_id, path, engine=None):
+    with _LOCK:
+        cfg = load()
+        engine = _preset_engine(cfg, engine)
+        parked = _nested_preset_map(cfg, "vision_off")
+        scoped = parked.setdefault(engine, {})
+        if path:
+            scoped[model_id] = path
+        else:
+            scoped.pop(model_id, None)
+        if not scoped:
+            parked.pop(engine, None)
+        cfg["vision_off"] = parked
+        save(cfg)
+
+def set_vision(model_id, on, engine=None):
+    """Turn a model's projector on or off. Raises ValueError when there is
+    nothing to turn off, or the parked file has gone. Returns {vision, mmproj}."""
+    path = ini_path(engine)
+    current = read_sections(path).get(model_id, {}).get("mmproj")
+    parked = vision_parked(engine).get(model_id)
+    if on:
+        if current:
+            return {"vision": True, "mmproj": current}
+        if not parked:
+            raise ValueError("this model has no vision projector to turn on")
+        if not os.path.exists(_abs(parked)):
+            raise ValueError(f"the projector file is gone: {os.path.basename(parked)}")
+        set_keys(model_id, {"mmproj": parked}, path)
+        _set_parked(model_id, None, engine)
+        return {"vision": True, "mmproj": parked}
+    if not current:
+        if parked:
+            return {"vision": False, "mmproj": parked}
+        raise ValueError("this model has no vision projector")
+    _set_parked(model_id, current, engine)      # park first: a crash never loses the path
+    set_keys(model_id, {"mmproj": None}, path)
+    return {"vision": False, "mmproj": current}
+
+def repark_vision(model_id, path, engine=None):
+    """A rescan found this parked model's projector (maybe a newer file)."""
+    if path and model_id in vision_parked(engine):
+        _set_parked(model_id, path, engine)
+
+def prune_vision(model_id, engine=None):
+    _set_parked(model_id, None, engine)
 
 def bindings_for_preset(name, engine=None):
     """Model ids bound to preset `name`."""
