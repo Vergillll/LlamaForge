@@ -17,7 +17,7 @@ body:
     attributes:
       label: LlamaForge version
       description: Shown next to the LLAMAFORGE name in the sidebar (also "version" in /api/state).
-      placeholder: e.g. v0.16.2
+      placeholder: e.g. v0.16.3
     validations:
       required: true
   - type: dropdown
