@@ -64,6 +64,7 @@ order: 1
 | `slot_headroom_mib` | int | `1536` | VRAM kept free per GPU beyond every plan, in MiB (0–32768). |
 | `slot_autoload` | bool | `False` | Let client requests load models themselves, which bypasses the placement planner. Changing it restarts a running router. |
 | `slots` | object | `{"main": "", "placed": {}}` | Multi-model bookkeeping: the main model id, and the `models.ini` keys LlamaForge wrote per placed model (so turning `multi_model` off can put the file back the way you wrote it). |
+| `vision_off` | object | `{}` | Models whose vision projector is turned off, scoped by llama-family engine: `{engine: {model_id: mmproj path}}`. Written by the Vision switch; a rescan keeps these off. |
 | `model_builds` | object | `{}` | Per-model engine pin: `{model_id: install dir name or "ik_llama"}`. A model pinned to a build other than the router's own runs in its own process. |
 | `slot_port_base` | int | `8100` | First port used for those per-model processes. |
 

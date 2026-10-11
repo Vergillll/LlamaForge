@@ -118,6 +118,7 @@ These are the endpoints external coding agents (Claude Code, Codex, etc.) talk t
 | GET | `/api/slots/plan` | Where a model would go if loaded: query `model` (required) and `role` (`worker` by default). Returns the verdict a load would get now (whether it fits and what would be evicted) without loading anything. |
 | POST | `/api/slots/main` | Set the pool's main model: `{model}` (`""` clears it). |
 | POST | `/api/slots/apply` | Restart the router with the pool the current settings ask for. Returns `{ok, restarted, error}`. |
+| POST | `/api/model/vision` | Vision on or off for one model: `{model, on}`. Off removes its `mmproj` line and keeps the path in `vision_off`; on restores it. The projector file is never touched. A model that is up is unloaded first. Returns `{ok, vision, was_running}`; 400 when the model has no projector or the parked file is gone. |
 | POST | `/api/model/build` | Pin a model to an installed build: `{model, build}`; `build: ""` runs it on the router's own build. A model that is up is unloaded first. Returns `{ok, build, changed, was_running}`. |
 | GET | `/api/pi/status` | The pi coding agent: Node.js version against the minimum, whether LlamaForge has its own copy (`managed`), which pi is `active`, whether a job is `busy`, and the `last` result. |
 | POST | `/api/pi/install` / `/api/pi/remove` | Start a pi install (or update) or removal job; progress comes back through `GET /api/pi/status`. `409` if a job is already running. |
