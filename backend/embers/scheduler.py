@@ -260,15 +260,19 @@ class Scheduler:
             key = (c["id"], c["job"])
             w = self._waiting.get(key)
             waited = self.clock() - w["since"] if w and w["since"] is not None else 0
-            why = self._own_build(c["model"])
+            # No model of its own: whatever is loaded, else Setup's auto-load model.
+            want = c["model"] or ("" if loaded else str(cfg.get("auto_load_model") or ""))
+            why = self._own_build(want)
             if why:                            # a setting, not a busy GPU: waits, never skips
                 self._wait(result, c, why, count=False)
                 continue
             if on_pool:
-                plan = self._plan(c["model"], loaded, busy, swap_ok)
-                action, arg = decide_pool(c["model"], loaded, busy, waited, swap_ok, plan)
+                plan = self._plan(want, loaded, busy, swap_ok)
+                action, arg = decide_pool(want, loaded, busy, waited, swap_ok, plan)
             else:
-                action, arg = decide(c["model"], loaded, busy, idle_for, waited, swap_ok)
+                action, arg = decide(want, loaded, busy, idle_for, waited, swap_ok)
+            if not want and action in ("wait", "skip") and arg.startswith("no model is loaded"):
+                arg += "; pick a model in this ember's Settings, or an auto-load model in Setup"
             if action == "wait":
                 self._wait(result, c, arg)
                 continue
