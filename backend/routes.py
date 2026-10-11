@@ -158,6 +158,13 @@ def total_vram_mib():
     return sum(g["total"] for g in _gpu_telemetry() if "total" in g)
 
 
+def vram_snapshot_mib():
+    """(total, used) VRAM across GPUs from one nvidia-smi call.  `used` counts
+    everything on the cards right now: other apps and any loaded model."""
+    gpus = [g for g in _gpu_telemetry() if "total" in g]
+    return sum(g["total"] for g in gpus), sum(g.get("used", 0) for g in gpus)
+
+
 def download_dir():
     c = cfg()
     if c.get("model_dirs"):
@@ -1830,7 +1837,8 @@ def post_hub_search(req):
         res = hub.search(req.body.get("query", ""), req.body.get("sort", "downloads"))
         inst = installed_repos(res, config.read_sections(),
                                vllm_registry.models() if VLLM_SUPPORTED else [])
-        return 200, {"results": res, "vram_mib": total_vram_mib(), "installed": inst}
+        total, used = vram_snapshot_mib()
+        return 200, {"results": res, "vram_mib": total, "vram_used_mib": used, "installed": inst}
     except Exception as e:
         return 200, {"error": str(e), "results": []}
 
@@ -2238,7 +2246,8 @@ def post_vllm_hub_search(req):
     try:
         res = vllm_hub.search(req.body.get("query", ""), req.body.get("sort", "downloads"))
         inst = installed_repos(res, {}, vllm_registry.models())
-        return 200, {"results": res, "vram_mib": total_vram_mib(), "installed": inst}
+        total, used = vram_snapshot_mib()
+        return 200, {"results": res, "vram_mib": total, "vram_used_mib": used, "installed": inst}
     except Exception as e:
         return 200, {"error": str(e), "results": []}
 

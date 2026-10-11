@@ -116,7 +116,8 @@ export function loadDiscover() {
         <button class="primary" id="hub-go">Search</button>
         <span class="msg" id="hub-msg"></span>
       </div>
-      <div class="note">Fit ratings compare file size against your total VRAM (<span id="hub-vram">?</span> GB across all GPUs).
+      <div class="note">Fit ratings compare file size against your total VRAM (<span id="hub-vram">?</span> GB across all GPUs<span id="hub-vram-used"></span>).
+        They don't subtract VRAM that other apps are using; when you load, llama.cpp's --fit sizes the model to what is actually free.
         FITS = full GPU offload with headroom &middot; TIGHT = loads but little room for context &middot; CPU OFFLOAD = larger than VRAM, will use system RAM (slower).</div>
     </div>
     <div id="hub-results"></div>
@@ -153,7 +154,7 @@ async function hubSearch() {
   const msg = $("#hub-msg"); msg.className = "msg work"; msg.textContent = "searching huggingface.co...";
   const r = await api("/api/hub/search", {query: $("#hub-q").value.trim(), sort: $("#hub-sort").value});
   if (r.error) { msg.className = "msg err"; msg.textContent = r.error.slice(0,80); return; }
-  $("#hub-vram").textContent = (r.vram_mib/1024).toFixed(1);
+  showVram(r);
   msg.className = "msg ok"; msg.textContent = `${r.results.length} repos`;
   const inst = new Set(r.installed || []);
   if ($("#hub-sort").value === "trending") r.results.forEach(m => m.isNew = true);
@@ -250,12 +251,17 @@ function ggufDlPoll() {
   }, 1000);
 }
 
+function showVram(r) {
+  $("#hub-vram").textContent = (r.vram_mib/1024).toFixed(1);
+  $("#hub-vram-used").textContent = r.vram_used_mib ? `; ${(r.vram_used_mib/1024).toFixed(1)} GB in use right now` : "";
+}
+
 /* ---------- vLLM (safetensors) ---------- */
 async function vllmHubSearch() {
   const msg = $("#hub-msg"); msg.className = "msg work"; msg.textContent = "searching safetensors repos...";
   const r = await api("/api/vllm/hub/search", {query: $("#hub-q").value.trim(), sort: $("#hub-sort").value});
   if (r.error) { msg.className = "msg err"; msg.textContent = r.error.slice(0,80); return; }
-  $("#hub-vram").textContent = (r.vram_mib/1024).toFixed(1);
+  showVram(r);
   msg.className = "msg ok"; msg.textContent = `${r.results.length} repos`;
   const inst = new Set(r.installed || []);
   setHTML($("#hub-results"), `<div class="list">${r.results.map(m => hubRow(m, inst, "vhub-repo")).join("")}</div>`);
