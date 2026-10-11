@@ -41,7 +41,7 @@ A source that can't be read is skipped for that run, the run carries on, and the
 
 Two templates ship with LlamaForge:
 
-- **Model Scout** needs no setup. It watches new llama.cpp releases against this machine's snapshot and tells you each morning what is new and whether it plausibly fits your hardware.
+- **Model Scout** needs no setup beyond a model: it runs on whatever is loaded, or loads one itself if you pick one in its Settings or set an auto-load model in Setup. It watches new llama.cpp releases against this machine's snapshot and tells you each morning what is new and whether it plausibly fits your hardware.
 - **Morning Brief** tracks loose ends (promises, things you're waiting on, deadlines, meetings) from a notes folder, a calendar, a repo and a feed.
 
 Templates are treated as untrusted input. They never carry paths, credentials or tool definitions; your folders, URLs and repos live in the ember's own `ember.json`.
@@ -66,7 +66,7 @@ Templates are treated as untrusted input. They never carry paths, credentials or
 
 ## Sharing the GPU
 
-The scheduler only contacts the router when a job is due. A job waits while the router is busy or down, and is skipped after an hour. An ember pinned to a different model swaps it in only after the router has been watched idle for 10 minutes, then puts your model back, unless you loaded something else meanwhile. If you load or unload a model while a job runs, the job stops cleanly and the GPU is yours. Loading a model for an ember can be turned off with `embers_swap_models`; a job that needs another model then waits instead.
+The scheduler only contacts the router when a job is due. A job waits while the router is busy or down, and is skipped after an hour. An ember with no model of its own uses whatever is loaded; with nothing loaded it uses Setup's auto-load model like a pinned one, and with neither it waits. An ember pinned to a different model swaps it in only after the router has been watched idle for 10 minutes, then puts your model back, unless you loaded something else meanwhile. If you load or unload a model while a job runs, the job stops cleanly and the GPU is yours. Loading a model for an ember can be turned off with `embers_swap_models`; a job that needs another model then waits instead.
 
 With [multi-model](setup.md) on, an ember never evicts anything. A job whose model isn't up loads it as a worker beside yours, only when nothing is generating and the planner says it fits (no idle wait), then unloads it afterwards unless you made it the main model or are using it. A model pinned to its own build (outside the router) can't be used by an ember.
 

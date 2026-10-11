@@ -6,7 +6,7 @@
 // same contract as the Help tab's docs renderer). Everything this file
 // interpolates itself goes through esc().
 import { $, $$, api, esc, setHTML, toast, askYes } from "./core.js";
-import { models } from "./state.js";
+import { models, config as cfgOf } from "./state.js";
 import { showModal } from "./models.js";
 import { forgeReset, forgeSend, initForge, renderForge } from "./forge.js";
 
@@ -415,12 +415,15 @@ function showSettings(el, c) {
         <div class="formrow">
           <label class="f grow"><span class="lbl">Name</span><input name="name" maxlength="120" value="${esc(c.name)}"></label>
           <label class="f"><span class="lbl">Model</span><select name="model">
-            <option value="">Whichever is loaded (main first)</option>
+            <option value="">Whichever is loaded, else Setup's auto-load model</option>
             ${ids.map(m => `<option value="${esc(m)}"${m === c.model ? " selected" : ""}>${esc(m)}</option>`).join("")}
           </select></label>
           <label class="f ef-check"><input type="checkbox" name="enabled"${c.enabled ? " checked" : ""}> Runs on schedule</label>
         </div>
         ${c.model_hint ? `<div class="note">Template suggests: ${esc(c.model_hint)}.</div>` : ""}
+        ${!c.model && !cfgOf().auto_load_model ? `<div class="slotnote warn">No model picked here and no auto-load
+          model in Setup, so this ember only runs while you have a model loaded. Pick one to let it load
+          one itself overnight.</div>` : ""}
       </div>
       <div class="card"><h3>Sources</h3>
         ${c.slots.map(s => slotField(s, c.bindings[s.id] || "")).join("")}

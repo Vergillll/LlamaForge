@@ -509,6 +509,73 @@ class SwapTest(SchedCase):
         self.assertIn("idle minutes", self.sched.tick()["waiting"]["a"]["ingest"])
 
 
+class FallbackModelTest(SchedCase):
+    """An ember with no model of its own uses what is loaded; with nothing
+    loaded it falls back to Setup's auto-load model, like a pinned one."""
+
+    def test_nothing_loaded_loads_the_auto_load_model_then_unloads_it(self):
+        self.ember("a")
+        self.cfg["auto_load_model"] = "everyday"
+        self.state.loaded = None
+        self.sched.tick()
+        self.t[0] = SWAP_IDLE - 1
+        self.assertIn("idle minutes", self.sched.tick()["waiting"]["a"]["ingest"])
+        self.t[0] = SWAP_IDLE
+        self.assertEqual(self.sched.tick()["ran"], ("a", "ingest", "ok"))
+        self.assertEqual(self.runners.calls[0][2], "everyday")
+        self.assertEqual(self.ops(), [("load", "everyday"), ("unload", "everyday")])
+
+    def test_a_loaded_model_still_wins(self):
+        self.ember("a")
+        self.cfg["auto_load_model"] = "everyday"
+        self.assertEqual(self.sched.tick()["ran"], ("a", "ingest", "ok"))
+        self.assertEqual(self.runners.calls[0][2], "base-model")
+        self.assertEqual(self.ops(), [])
+
+    def test_no_auto_load_model_still_waits(self):
+        self.ember("a")
+        self.state.loaded = None
+        self.t[0] = SWAP_IDLE * 3
+        note = self.sched.tick()["waiting"]["a"]["ingest"]
+        self.assertTrue(note.startswith("no model is loaded; pick a model"), note)
+        self.assertIn("auto-load model in Setup", note)
+        self.assertEqual(self.ops(), [])
+
+    def test_other_reasons_get_no_hint(self):
+        self.ember("a")
+        self.state.activity = 2
+        note = self.sched.tick()["waiting"]["a"]["ingest"]
+        self.assertIn("busy", note)
+        self.assertNotIn("pick a model", note)
+
+    def test_the_skip_says_how_to_fix_it(self):
+        self.ember("a")
+        self.state.loaded = None
+        self.sched.tick()
+        self.t[0] = WAIT_MAX
+        skipped = self.sched.tick()["skipped"]
+        self.assertEqual(len(skipped), 1, skipped)
+        self.assertIn("for 60 minutes; pick a model", str(skipped[0]))
+
+    def test_swapping_off_never_loads_it(self):
+        self.ember("a")
+        self.cfg["auto_load_model"] = "everyday"
+        self.cfg["embers_swap_models"] = False
+        self.state.loaded = None
+        self.t[0] = SWAP_IDLE * 3
+        self.assertIn("swapping is off", self.sched.tick()["waiting"]["a"]["ingest"])
+        self.assertEqual(self.ops(), [])
+
+    def test_a_pinned_model_beats_the_auto_load_model(self):
+        self.ember("a", model="pinned")
+        self.cfg["auto_load_model"] = "everyday"
+        self.state.loaded = None
+        self.sched.tick()
+        self.t[0] = SWAP_IDLE
+        self.sched.tick()
+        self.assertEqual(self.ops(), [("load", "pinned"), ("unload", "pinned")])
+
+
 class PreemptTest(SchedCase):
     def test_model_calls_go_through_while_ours_is_loaded(self):
         self.ember("a")
