@@ -43,6 +43,16 @@ The tab also surfaces `hardware.recommend()`'s detected CPU/GPU (shared with the
 5. Click **Check for deleted models** to find registry entries whose backing file no longer exists on disk, then click **Remove N missing** to prune them.
 6. Optionally pick a model under **Startup** to auto-load when LlamaForge launches.
 
+## Game mode
+
+Tick **unload models while a game is running** and LlamaForge frees your GPU when you start a game, then loads the same models again when you quit it.
+
+- **What counts as a game:** anything running from a Steam, Epic, GOG, Xbox, Riot, EA or Ubisoft game folder; any program you list in the box (one name per line, `.exe` optional); and, on Windows, an app in exclusive full screen. Launchers themselves (Steam, the Epic launcher, the Riot client) don't count.
+- **Exceptions:** tick models under **Keep these loaded during games** and they stay loaded; every other model is unloaded. A model a client loads while you play is unloaded too, unless it's on the list.
+- **Timing:** it checks every 5 seconds and needs two sightings to start, so a launcher splash doesn't trigger it. It waits about 15 seconds after the game closes before loading models back, so a loading screen doesn't either.
+- **Load them again when the game closes** is on by default; untick it to leave the GPU empty afterwards.
+- Turning Game mode off mid-game brings the models back right away. The **now** line shows the detected game and how many models it unloaded.
+
 ## Network Access
 
 The Network Access card controls the llama.cpp router, never the dashboard: the

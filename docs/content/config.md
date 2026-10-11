@@ -67,12 +67,16 @@ order: 1
 | `vision_off` | object | `{}` | Models whose vision projector is turned off, scoped by llama-family engine: `{engine: {model_id: mmproj path}}`. Written by the Vision switch; a rescan keeps these off. |
 | `model_builds` | object | `{}` | Per-model engine pin: `{model_id: install dir name or "ik_llama"}`. A model pinned to a build other than the router's own runs in its own process. |
 | `slot_port_base` | int | `8100` | First port used for those per-model processes. |
+| `game_mode` | bool | `False` | Unload models while a game runs (Setup > Game mode). |
+| `game_mode_keep` | list | `[]` | Model ids Game mode leaves loaded. |
+| `game_mode_games` | list | `[]` | Extra executable names that count as games, e.g. `eldenring.exe`. |
+| `game_mode_restore` | bool | `True` | Load the unloaded models again when the game closes. |
 
-52 keys total, matching `DEFAULTS` in `backend/config.py`.
+56 keys total, matching `DEFAULTS` in `backend/config.py`.
 
 `prebuilt_channel` (`"nightly"` or `"stable"`, the channel the Build / Update tab's prebuilt-engine card follows) is not in `DEFAULTS`: it is written the first time you install a prebuilt engine, and the card reads it as `"nightly"` until then.
 
-`POST /api/config` accepts only the settings the dashboard itself changes: `ui_mode`, `theme`, `cvd`, `skin`, `onboarded`, `auto_load_model`, `wsl_distro`, `vllm_port`, `model_dirs`, `anthropic_default_model`, `anthropic_shim_enabled`, `vram_bandwidths`, `vram_predict_enabled`, `multi_model`, `slot_cap`, `slot_headroom_mib` and `slot_autoload`. Any other key is refused and named in the response; the rest are edited by their own endpoints or by hand in `config.json`.
+`POST /api/config` accepts only the settings the dashboard itself changes: `ui_mode`, `theme`, `cvd`, `skin`, `onboarded`, `auto_load_model`, `wsl_distro`, `vllm_port`, `model_dirs`, `anthropic_default_model`, `anthropic_shim_enabled`, `vram_bandwidths`, `vram_predict_enabled`, `multi_model`, `slot_cap`, `slot_headroom_mib`, `slot_autoload`, `game_mode`, `game_mode_keep`, `game_mode_games` and `game_mode_restore`. Any other key is refused and named in the response; the rest are edited by their own endpoints or by hand in `config.json`.
 
 ## Preset bindings
 

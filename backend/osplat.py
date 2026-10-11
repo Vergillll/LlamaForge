@@ -290,3 +290,81 @@ def refresh_path():
         return False
     os.environ["PATH"] = os.pathsep.join(current_entries + added)
     return True
+
+
+# ---- game mode probes ----------------------------------------------------------
+
+def _win_process_paths():
+    """Image paths of running processes via psapi/kernel32 (no subprocess).
+    Processes we may not open (system, other users) are skipped."""
+    import ctypes
+    from ctypes import wintypes
+    psapi, k32 = ctypes.WinDLL("psapi"), ctypes.WinDLL("kernel32")
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    k32.QueryFullProcessImageNameW.argtypes = (wintypes.HANDLE, wintypes.DWORD,
+                                               wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD))
+    k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    n = 4096
+    while True:
+        pids = (wintypes.DWORD * n)()
+        got = wintypes.DWORD()
+        if not psapi.EnumProcesses(pids, ctypes.sizeof(pids), ctypes.byref(got)):
+            return []
+        if got.value < ctypes.sizeof(pids):
+            break
+        n *= 2
+    out = []
+    buf = ctypes.create_unicode_buffer(1024)
+    for pid in pids[:got.value // ctypes.sizeof(wintypes.DWORD)]:
+        h = k32.OpenProcess(0x1000, False, pid)          # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            continue
+        try:
+            size = wintypes.DWORD(len(buf))
+            if k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+                out.append(buf.value)
+        finally:
+            k32.CloseHandle(h)
+    return out
+
+
+def _linux_process_paths():
+    """exe and argv[0] per process: a Proton game's exe is Wine's, its argv names the game."""
+    out = []
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            out.append(os.readlink(f"/proc/{pid}/exe"))
+        except OSError:
+            pass
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                for arg in f.read().split(b"\0")[:2]:
+                    if arg:
+                        out.append(arg.decode("utf-8", "replace"))
+        except OSError:
+            pass
+    return out
+
+
+def process_image_paths():
+    """Executable paths of running processes ([] when they can't be listed)."""
+    if IS_WIN:
+        return _win_process_paths()
+    if IS_LINUX:
+        return _linux_process_paths()
+    text = run_text(["ps", "-axo", "comm="]) or ""
+    return [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+
+def fullscreen_d3d():
+    """True while an app holds exclusive full-screen Direct3D (Windows only)."""
+    if not IS_WIN:
+        return False
+    import ctypes
+    state = ctypes.c_int(0)
+    if ctypes.windll.shell32.SHQueryUserNotificationState(ctypes.byref(state)) != 0:
+        return False
+    return state.value == 3                  # QUNS_RUNNING_D3D_FULL_SCREEN

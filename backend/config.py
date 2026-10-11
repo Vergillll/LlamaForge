@@ -79,6 +79,10 @@ DEFAULTS = {
     "slot_cap":          3,                     # most models loaded together (2-4)
     "slot_headroom_mib": 1536,                  # per GPU, kept free beyond every plan
     "slot_autoload":     False,                 # let client requests load models (bypasses the planner)
+    "game_mode":         False,                 # unload models while a game runs
+    "game_mode_keep":    [],                    # model ids game mode leaves loaded
+    "game_mode_games":   [],                    # extra executables that count as games
+    "game_mode_restore": True,                  # load them again when the game closes
     "slots":             {"main": "", "placed": {}},  # main model id; {model: keys LlamaForge wrote}
     # Per-model builds (builds.py): {model id: install dir name | "ik_llama"}.
     # A pin other than the router's own build runs the model in its own process.

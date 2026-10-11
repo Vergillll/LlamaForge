@@ -8,6 +8,11 @@ order: 1
 
 This page summarizes the most recent additions to LlamaForge. Each entry links to the full reference for that capability. For the longer-term direction, see the project's `ROADMAP.md`.
 
+## Unreleased
+
+- **Game mode.** Start a game and LlamaForge unloads your models; quit it and they load again. Games are recognised by their Steam, Epic, GOG, Xbox, Riot, EA or Ubisoft folder, by names you add, or (Windows) by exclusive full screen. Pick models to keep loaded through it. Off by default. See [Setup](setup.md#game-mode).
+- **Discover shows VRAM in use** next to the fit rating, so you can see what's already taken.
+
 ## v0.16.2: load progress, Thinking and Vision switches
 
 - **Real load progress.** A loading model shows `loading N%` and a bar through its stages (weights, draft model, vision projector) instead of a stopwatch. The numbers are llama.cpp's own load callback, which the router streams on `GET /models/sse`; LlamaForge listens only while something is loading. A router build without that stream keeps the elapsed-seconds display. See [Models & Tuning](models.md).

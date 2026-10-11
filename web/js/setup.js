@@ -525,6 +525,52 @@ function slotsMarkup() {
     </div>`;
 }
 
+function gameStatusText(g) {
+  if (!g || !g.enabled) return "off";
+  if (!g.active) return "on · no game running";
+  const n = (g.parked || []).length;
+  return `${g.game} is running · ${n} model${n === 1 ? "" : "s"} unloaded until it closes`;
+}
+
+function gameMarkup() {
+  const c = cfgOf(), g = (S.STATE && S.STATE.game_mode) || {};
+  const keep = new Set(c.game_mode_keep || []);
+  const box = (id, on) => `<input type="checkbox" id="${id}" ${on ? "checked" : ""}>`;
+  const list = models();
+  return `<div class="card" id="game-card"><h3>Game mode</h3>
+      <div class="kv"><label class="k" for="gm-on">unload models while a game is running</label><span class="v">${box("gm-on", c.game_mode)}</span></div>
+      <div class="kv"><label class="k" for="gm-restore">load them again when the game closes</label><span class="v">${box("gm-restore", c.game_mode_restore !== false)}</span></div>
+      <div class="kv"><span class="k">now</span><span class="v ${g.active ? "warn" : ""}" id="gm-status">${esc(gameStatusText(g))}</span></div>
+      <div class="kv"><span class="k">keep these loaded during games</span><span class="v">${keep.size || "none"}</span></div>
+      ${list.length ? `<div class="gm-keep" style="max-height:180px;overflow:auto;margin:4px 0 10px;padding:4px 0">${list.map(m => `<label style="display:flex;gap:8px;align-items:center;padding:3px 0;cursor:pointer"><input type="checkbox" style="width:auto;margin:0" data-gm-keep="${esc(m.id)}" ${keep.has(m.id) ? "checked" : ""}><span>${esc(m.id)}</span></label>`).join("")}</div>`
+        : `<div class="note">No models registered yet.</div>`}
+      <div class="fld"><label for="gm-games">Also count these programs as games (one per line, e.g. eldenring.exe)</label>
+        <textarea id="gm-games" rows="2" style="width:100%;resize:vertical" placeholder="eldenring.exe">${esc((c.game_mode_games || []).join("\n"))}</textarea></div>
+      <div class="actions"><button id="gm-save">Save</button><span class="msg" id="gm-msg"></span></div>
+      <div class="note">A game is anything running from a Steam, Epic, GOG, Xbox, Riot, EA or Ubisoft game folder, a program listed above, or (on Windows) an app in exclusive full screen. It checks every 5 seconds and waits for two sightings, so a launcher splash doesn't count; models come back about 15 seconds after the game closes. A model a client loads mid-game is unloaded too, unless it's on the list.</div>
+    </div>`;
+}
+
+function wireGame(generation) {
+  const save = $("#gm-save");
+  if (!save) return;
+  const msg = (t, c) => { const m = $("#gm-msg"); if (m) { m.className = "msg " + c; m.textContent = t; } };
+  save.onclick = async () => {
+    const body = {
+      game_mode: $("#gm-on").checked,
+      game_mode_restore: $("#gm-restore").checked,
+      game_mode_keep: $$("[data-gm-keep]").filter(b => b.checked).map(b => b.dataset.gmKeep),
+      game_mode_games: $("#gm-games").value.split("\n").map(x => x.trim()).filter(Boolean),
+    };
+    msg("saving...", "work");
+    const r = await api("/api/config", body).catch(() => null);
+    if (!setupViewActive(generation)) return;
+    if (!r || !r.ok) return msg((r && r.error) || "save failed", "err");
+    if (S.STATE) S.STATE.config = r.config;
+    msg(body.game_mode ? `on · ${body.game_mode_keep.length} kept` : "off", "ok");
+  };
+}
+
 function wireSlots(generation) {
   const sl = slotState(), save = $("#mm-save");
   if (!sl || !save) return;
@@ -616,6 +662,7 @@ export async function loadSetup() {
       <div class="note">The selected model loads automatically once the router is ready after launch &mdash; handy for always-on setups. An optional tray icon (loaded-model count, quick open) is available if you <b>pip install pystray pillow</b>; without them LlamaForge stays pure-stdlib.</div>
     </div>
     ${slotsMarkup()}
+    ${gameMarkup()}
     ${networkMarkup(net)}
     <div id="agent-connect" class="card"></div>`
     + (vs.supported === false ? "" : `<div class="card"><h3>vLLM Backend (WSL2)</h3>
@@ -646,6 +693,7 @@ export async function loadSetup() {
   };
   $("#btn-missing").onclick = checkMissing;
   wireSlots(generation);
+  wireGame(generation);
   const autoSel = $("#auto-load");
   if (autoSel) autoSel.onchange = async () => {
     await api("/api/config", {auto_load_model: autoSel.value});
