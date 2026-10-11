@@ -62,6 +62,7 @@ every server flag instead of a curated subset.
 - **Models**: every model on your machine in one list, with live VRAM/util/temp per GPU. Load, unload, or open Chat from the row.
   - Expand a model to edit every llama-server flag, grouped and searchable, next to a GGUF metadata card (architecture, quant, trained context, layers).
   - Save reloads the model in place. A failed load shows the last error from the router log with a best-guess hint.
+  - A loading model shows real progress (weights, draft, vision), straight from llama.cpp's load callback. One-click switches for **Thinking** (Auto / On / Off plus a token budget, with a note on whether the model's chat template can really turn it off) and **Vision** (off frees the projector's VRAM; the file stays on disk).
   - Presets, launch profiles (model + preset + pinned llama.cpp build in one click), side-by-side compare, and copy-paste client snippets.
   - Turn on **Multi-model** in Setup to keep a main model and workers loaded at once. A planner places each one on the GPUs that fit it, using footprints measured on your machine. A model can also be pinned to its own llama.cpp (or ik_llama.cpp) build.
 - **Chat**: llama.cpp's own chat UI (markdown, reasoning, images) inside the dashboard, on its own port, with the API key added for you.

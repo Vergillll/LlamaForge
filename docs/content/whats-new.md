@@ -8,6 +8,16 @@ order: 1
 
 This page summarizes the most recent additions to LlamaForge. Each entry links to the full reference for that capability. For the longer-term direction, see the project's `ROADMAP.md`.
 
+## v0.16.2: load progress, Thinking and Vision switches
+
+- **Real load progress.** A loading model shows `loading N%` and a bar through its stages (weights, draft model, vision projector) instead of a stopwatch. The numbers are llama.cpp's own load callback, which the router streams on `GET /models/sse`; LlamaForge listens only while something is loading. A router build without that stream keeps the elapsed-seconds display. See [Models & Tuning](models.md).
+- **Thinking: Auto / On / Off, plus a budget.** A one-click row in the model editor over llama.cpp's `--reasoning` and `--reasoning-budget`. The model's chat template decides the hint: a template with a thinking switch (`enable_thinking` and the like) really turns thinking off; a template that only shows `<think>` or `[THINK]` tags may keep thinking anyway. Models with neither don't get the row.
+- **Vision on/off.** Turning a model's vision off removes its `mmproj` line and remembers the path, so the projector's VRAM is free and the file stays on disk. A rescan or re-download doesn't turn it back on; **On** restores the line.
+
+## v0.16.1
+
+- **Model Scout runs overnight again.** An ember with no model of its own now uses the auto-load model from Setup when nothing is loaded, instead of skipping its jobs. See [Embers](embers.md).
+
 ## v0.16: Embers, several models at once, an MCP server, Voice
 
 - **Voice: text to speech on your GPU.** A new Voice tab speaks through llama.cpp's own `llama-tts` with Qwen3-TTS (10 languages) or the tiny English Pocket TTS (faster than real time, even on a CPU), optionally in a voice you record or upload (only clone voices you may use). The panel also serves an OpenAI-style `POST /v1/audio/speech`, so OpenAI clients get local speech. No VRAM is held between requests. See [Voice](voice.md).
