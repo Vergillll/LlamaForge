@@ -112,7 +112,7 @@ function Install-LlamaForge {
         } catch { }
       }
       if (-not $ref) {
-        throw "Could not find the latest LlamaForge release (GitHub unreachable or rate-limited). Retry in a few minutes, or pin one: `$env:LLAMAFORGE_REF = 'v0.16.2'"
+        throw "Could not find the latest LlamaForge release (GitHub unreachable or rate-limited). Retry in a few minutes, or pin one: `$env:LLAMAFORGE_REF = 'v0.16.3'"
       }
       $kind = if ($ref -match '^v\d') { "tags" } else { "heads" }
       $version = $ref
