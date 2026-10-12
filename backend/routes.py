@@ -247,7 +247,8 @@ def _gpu_telemetry():
         out = subprocess.check_output(
             ["nvidia-smi",
              "--query-gpu=index,name,memory.used,memory.total,utilization.gpu,temperature.gpu",
-             "--format=csv,noheader,nounits"], text=True, timeout=8)
+             "--format=csv,noheader,nounits"], text=True, timeout=8,
+            creationflags=router_ctl.CREATE_NO_WINDOW if osplat.IS_WIN else 0)
     except Exception as e:
         return [{"error": str(e)}]
     res = []
@@ -677,6 +678,12 @@ def _apply_knobs_and_reload(mid, clean):
     running model's changed preset. On a pool the slot manager unloads it, so
     the per-GPU books stay right. Returns whether it had been running."""
     config.set_keys(mid, clean)
+    return _reload_preset(mid)
+
+
+def _reload_preset(mid):
+    """Make the router pick up mid's models.ini section as it is now: unload
+    it first when it's running, then ?reload=1. Whether it had been running."""
     running = (_model_status(mid) or {}).get("value") in slotctl.RUNNING
     if running:
         _unload_and_wait(mid)
@@ -2792,14 +2799,28 @@ def _el_record(mid, rec):
     config.mutate(fn)
 
 
-def _el_union(old, new):
-    """Both records at once: what elastic_placed holds while models.ini is being
-    rewritten, so a write that dies halfway leaves nothing of ours unrecorded.
-    A key put back to the user's value no longer matches what we wrote, so
-    plan_keys treats it as the user's and leaves it alone."""
+def _el_ini():
+    """Elastic only resizes llama.cpp router models, so it reads and writes the
+    llama.cpp models.ini whichever engine is active."""
+    return config.ini_path("llamacpp")
+
+
+def _el_llamacpp(c=None):
+    return (c or cfg()).get("active_engine", "llamacpp") == "llamacpp"
+
+
+def _el_pending(old, new):
+    """The record to hold while models.ini is rewritten: `old`, plus the keys
+    `new` adds that `old` doesn't have. Every key then matches the ini whether
+    the write lands or not: a key `old` has keeps its on-disk value until the
+    write succeeds, and an added key that never got written reads as a user
+    edit to plan_keys, which leaves the user's value alone."""
     old, new = old or {}, new or {}
-    keys = {**(old.get("keys") or {}), **(new.get("keys") or {})}
-    was = {**(old.get("was") or {}), **(new.get("was") or {})}
+    keys, was = dict(old.get("keys") or {}), dict(old.get("was") or {})
+    for k, v in (new.get("keys") or {}).items():
+        if k not in keys:
+            keys[k] = v
+            was[k] = (new.get("was") or {}).get(k)
     return {"keys": keys, "was": was} if keys else None
 
 
@@ -2829,11 +2850,29 @@ def _el_step_settings(mid, secs, rec, keys):
     return {**_el_user_settings(mid, secs, rec), **_el_spelt(secs.get(mid), keys)}
 
 
-def _el_snapshot():
+def _el_gpus():
+    """{gpu: {"used", "total"}} in MiB, straight from nvidia-smi."""
     if osplat.IS_MAC:                 # unified memory: nothing to move layers to
         return {}
     return {g["index"]: {"used": g["used"], "total": g["total"]}
             for g in _gpu_telemetry() if "index" in g and "used" in g and "total" in g}
+
+
+def _el_snapshot():
+    """The controller's look, every 5 s: nothing (no nvidia-smi run) while
+    Elastic is off and nothing of ours is left to put back."""
+    c = cfg()
+    if not c.get("elastic_vram") and not _el_placed(c):
+        return {}
+    return _el_gpus()
+
+
+def _el_measured(m, gpus):
+    """One footprint out of Store.measured()'s {devices: {gpu: MiB}}: the one
+    for the GPUs we see, else the largest."""
+    if not m:
+        return None
+    return m.get(tuple(sorted(gpus))) or max(m.values(), key=lambda fp: sum(fp.values()))
 
 
 def _el_models(gpus):
@@ -2844,9 +2883,9 @@ def _el_models(gpus):
     placed = _el_placed(c)
     if not c.get("elastic_vram") and not placed:
         return []
-    if c.get("active_engine", "llamacpp") != "llamacpp":
+    if not _el_llamacpp(c):
         return []
-    secs = config.read_sections()
+    secs = config.read_sections(_el_ini())
     build = SLOTS.build_id(_active_server_bin(c))
     out = []
     for mid in _router_loaded_ids():
@@ -2861,21 +2900,31 @@ def _el_models(gpus):
         measured, predicted = [], []
         for st in steps:
             s = _el_step_settings(mid, secs, rec, st["keys"])
-            m = SLOTS.store.measured(footprint.key(mid, build, s))
-            measured.append(next(iter(m.values())) if m else None)
+            measured.append(_el_measured(SLOTS.store.measured(footprint.key(mid, build, s)), gpus))
             predicted.append(int(footprint.predict(s, lay)["need_mib"]))
-        # rec keys carry the section's spelling (gpu-layers), ladder keys are
-        # canonical (n-gpu-layers): compare them normalized
-        ours = footprint._norm((rec or {}).get("keys") or {})
-        at = next((i for i, st in enumerate(steps)
-                   if ours and footprint._norm(st["keys"]) == ours), 0)
-        out.append({"id": mid, "steps": steps, "at": at,
+        out.append({"id": mid, "steps": steps, "at": _el_at(secs.get(mid) or {}, rec, steps),
                     "fps": elastic.footprints(measured, predicted, gpus)})
     return out
 
 
+def _el_at(section, rec, steps):
+    """The step a model is on. Only our keys still in effect count (one the
+    user has since edited is theirs). None: at the top. Rec keys carry the
+    section's spelling (gpu-layers), ladder keys are canonical (n-gpu-layers),
+    so both are compared normalized. Keys of ours that match no step (the
+    ladder moved: a new build, an edited [*]) mean resized to somewhere
+    unknown: call it the smallest step, which the controller can only grow
+    from, so a grow, or turning Elastic off, takes it back to the top."""
+    ours = footprint._norm({k: v for k, v in ((rec or {}).get("keys") or {}).items()
+                            if section.get(k) == v})
+    if not ours:
+        return 0
+    return next((i for i, st in enumerate(steps) if footprint._norm(st["keys"]) == ours),
+                len(steps) - 1)
+
+
 def _el_kv_mib(mid):
-    secs = config.read_sections()
+    secs = config.read_sections(_el_ini())
     s = {**(secs.get("*") or {}), **(secs.get(mid) or {})}
     p = footprint.predict(s, _el_layout(s.get("model") or ""))
     return int(p.get("kv_gpu_mib", 0) + p.get("kv_ram_mib", 0))
@@ -2893,27 +2942,53 @@ def _el_swap(mid, step):
     """Move mid to `step`: write the keys (recorded so they can be put back; a
     user edit wins), reload the preset, load. "" on success, else why not. On
     a single-model router, measure the step's footprint around the load - the
-    pool's slot manager records its own."""
+    pool's slot manager records its own.
+
+    The record always matches models.ini: the write is one atomic file
+    replace, held between _el_pending (before) and the new record (after); a
+    write that fails puts the old record back. The unload and reload come
+    after, so they can't strand a key either."""
+    if not _el_llamacpp():
+        return "Elastic VRAM only resizes llama.cpp router models"
+    ini = _el_ini()
     old = _el_placed().get(mid)
-    writes, rec = elastic.plan_keys(config.read_sections(raw=True).get(mid) or {},
+    writes, rec = elastic.plan_keys(config.read_sections(ini, raw=True).get(mid) or {},
                                     old, step["keys"])
-    _el_record(mid, _el_union(old, rec))          # before the ini: see _el_union
-    _apply_knobs_and_reload(mid, writes)          # unloads first when it's running
+    if writes:
+        _el_record(mid, _el_pending(old, rec))
+        try:
+            config.set_keys(mid, writes, path=ini)
+        except Exception:
+            _el_record(mid, old)
+            raise
     _el_record(mid, rec)
+    _reload_preset(mid)                           # unloads first when it's running
     pool = _slots_on()
-    before = None if pool else _el_snapshot()
-    try:
+    before = None if pool else _el_gpus()         # not the gated look: a grow to the
+    try:                                          # top has just cleared the record
         _load_and_wait(mid, "main" if SLOTS._main() == mid else "worker")
     except RuntimeError as e:
         return str(e) or "load failed"
     if before:
-        after = _el_snapshot()
-        fp = {g: after[g]["used"] - before[g]["used"] for g in after if g in before}
-        devices = sorted(g for g, v in fp.items() if v >= footprint.NOISE_MIB)
-        s = _el_step_settings(mid, config.read_sections(), rec, step["keys"])
-        SLOTS.store.record(footprint.key(mid, SLOTS.build_id(_active_server_bin()), s),
-                           devices, fp)
+        _el_measure(mid, rec, step, before, _el_gpus())
     return ""
+
+
+def _el_measure(mid, rec, step, before, after):
+    """Record what the load of `step` took on each GPU - unless it's far from
+    the prediction (half to one and a half times it), which means other apps
+    grew or shrank during the load and the delta isn't the model's."""
+    fp = {g: after[g]["used"] - before[g]["used"] for g in after if g in before}
+    devices = sorted(g for g, v in fp.items() if v >= footprint.NOISE_MIB)
+    s = _el_step_settings(mid, config.read_sections(_el_ini()), rec, step["keys"])
+    lay = _el_layout(s.get("model") or "")
+    if lay:
+        need = int(footprint.predict(s, lay).get("need_mib") or 0)
+        took = sum(fp[g] for g in devices)
+        if need > 0 and not need * 0.5 <= took <= need * 1.5:
+            return
+    SLOTS.store.record(footprint.key(mid, SLOTS.build_id(_active_server_bin()), s),
+                       devices, fp)
 
 
 def _el_restore(mid, handle):
@@ -2930,11 +3005,17 @@ def _el_drop(handle):
 def _el_giveup(mid):
     """Even the smallest step didn't load: the user's keys go back and the
     model stays unloaded until they load it. The record goes only once the
-    keys are back, so a failed write leaves it for tidy()."""
-    writes, _ = elastic.plan_keys(config.read_sections(raw=True).get(mid) or {},
+    keys are back, so a failed write leaves it for tidy(). On another engine
+    nothing is touched: tidy() puts the keys back once llama.cpp is active."""
+    if not _el_llamacpp():
+        return
+    ini = _el_ini()
+    writes, _ = elastic.plan_keys(config.read_sections(ini, raw=True).get(mid) or {},
                                   _el_placed().get(mid), {})
-    _apply_knobs_and_reload(mid, writes)
+    if writes:
+        config.set_keys(mid, writes, path=ini)
     _el_record(mid, None)
+    _reload_preset(mid)
 
 
 def _el_tidy():
@@ -2942,9 +3023,11 @@ def _el_tidy():
     mode, by a router restart) gets the user's keys back. Each model's keys go
     in one models.ini write, and its record goes only after that write, so a
     failure partway leaves the rest recorded for the next tick; whatever was
-    written still reaches the router."""
-    placed = _el_placed()
-    if not placed:
+    written still reaches the router. On another engine the llama.cpp router
+    isn't the one answering: the records wait until it's back."""
+    c = cfg()
+    placed = _el_placed(c)
+    if not placed or not _el_llamacpp(c):
         return
     st, data = router("/models")          # never raises: 599 when it's down
     if st != 200 or not isinstance(data, dict):
@@ -2954,13 +3037,14 @@ def _el_tidy():
     gone = [mid for mid in placed if mid not in up]
     if not gone:
         return
-    raw = config.read_sections(raw=True)
+    ini = _el_ini()
+    raw = config.read_sections(ini, raw=True)
     wrote = False
     try:
         for mid in gone:
             writes, _ = elastic.plan_keys(raw.get(mid) or {}, placed[mid], {})
             if writes:
-                config.set_keys(mid, writes)
+                config.set_keys(mid, writes, path=ini)
                 wrote = True
             _el_record(mid, None)
     finally:
@@ -2994,7 +3078,10 @@ def post_elastic_grow(req):
     """Grow a resized model back now. The swap takes seconds (a 27B about 20),
     so it runs in the background; the event log says how it went."""
     mid = str(req.body.get("model") or "")
-    if not any(m["id"] == mid and m["at"] > 0 for m in ELASTIC.status()["models"]):
+    st = ELASTIC.status()
+    if mid and st.get("swapping") == mid:
+        return 409, {"ok": False, "error": f"{mid} is being resized right now"}
+    if not any(m["id"] == mid and m["at"] > 0 for m in st["models"]):
         return 400, {"ok": False, "error": f"{mid or 'that model'} isn't resized"}
     threading.Thread(target=ELASTIC.safe_grow, args=(mid,), daemon=True,
                      name="elastic-grow").start()
