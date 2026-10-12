@@ -57,6 +57,15 @@ class SaveTest(unittest.TestCase):
         self.assertIn("restarts from LlamaForge", why)
 
 
+    def test_a_200_that_saved_nothing_says_so(self):
+        r = FakeRouter([{"id": 0, "n_prompt_tokens": 5000}])
+        r2 = lambda path, method="GET", body=None, timeout=30: (
+            (200, {}) if "action=save" in path else r(path, method, body, timeout))
+        files, why = slotkeep.save(r2, "m", "D:/x", disk_free=lambda p: 10 * 2**30)
+        self.assertEqual(files, [])
+        self.assertEqual(why, "conversation not kept: the router saved nothing")
+
+
 class RestoreTest(unittest.TestCase):
     def test_only_empty_idle_slots_are_restored(self):
         r = FakeRouter([{"id": 0, "n_prompt_tokens": 0, "is_processing": False},

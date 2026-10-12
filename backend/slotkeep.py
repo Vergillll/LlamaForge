@@ -57,6 +57,8 @@ def save(router, mid, folder, need_mib=0, disk_free=None):
         code, res = router(f"/slots/{sid}?action=save", "POST", {"model": mid, "filename": fn})
         if code == 200 and isinstance(res, dict) and res.get("n_saved"):
             out.append((sid, fn))
+        elif code == 200:
+            why = "conversation not kept: the router saved nothing"
         elif code == 501:
             why = RESTART_HINT
         elif code != 200:

@@ -184,8 +184,11 @@ def start(server_bin, models_ini, port, host, api_key, logdir, local_key="", poo
     if pool and not pool.get("autoload", True):
         args.append("--no-models-autoload")
     if supports_slot_save(server_bin):
-        os.makedirs(slot_save_dir(logdir), exist_ok=True)
-        args += ["--slot-save-path", slot_save_dir(logdir)]
+        try:                      # never let this block the router starting
+            os.makedirs(slot_save_dir(logdir), exist_ok=True)
+            args += ["--slot-save-path", slot_save_dir(logdir)]
+        except OSError:
+            pass
     args += network_policy.router_auth_args(host, api_key or local_key,
                                             supports_cors_origins(server_bin))
     out = logfiles.open_append(os.path.join(logdir, "router.out.log"))
