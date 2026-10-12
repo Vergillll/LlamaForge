@@ -145,13 +145,15 @@ class FakeIO:
         self.fail = set()               # step indexes whose load fails
         self.files = [(0, "lf-x-0.bin")]
         self.calls = []
+        self.room = {}                  # mid -> the room kept with its record (config.json)
 
     def snapshot(self):
         ours = sum(self.fps[m][a][0] for m, a in self.at.items())
         return {0: {"used": self.others + ours, "total": self.total}}
 
     def models(self, gpus):
-        return [{"id": m, "steps": LADDER, "fps": self.fps[m], "at": a} for m, a in self.at.items()]
+        return [{"id": m, "steps": LADDER, "fps": self.fps[m], "at": a, "room": self.room.get(m)}
+                for m, a in self.at.items()]
 
     def game_active(self):
         return self.game
@@ -163,12 +165,16 @@ class FakeIO:
         self.calls.append(("save", mid))
         return {"files": list(self.files), "note": ""}
 
-    def swap(self, mid, step):
+    def swap(self, mid, step, room=None):
         i = LADDER.index(step)
         self.calls.append(("swap", mid, i))
         if i in self.fail:
             return "out of memory"
         self.at[mid] = i
+        if i == 0:                      # back at the top: the record goes, the room with it
+            self.room.pop(mid, None)
+        elif room:
+            self.room[mid] = dict(room)
         return ""
 
     def restore(self, mid, handle):
@@ -181,6 +187,7 @@ class FakeIO:
     def giveup(self, mid):
         self.calls.append(("giveup", mid))
         del self.at[mid]
+        self.room.pop(mid, None)
 
 
 class Clock:
@@ -191,12 +198,18 @@ class Clock:
         return self.t
 
 
-def controller(io, **cfg):
+def controller(io, fresh=False, **cfg):
+    """fresh: the controller's first look is the baseline (just turned on).
+    Otherwise it has already seen the GPU calm with no other apps, so the
+    others a test starts with count as apps that grew."""
     c = {"elastic_vram": True, "elastic_grow": True, "elastic_keep_conversation": True,
          "elastic_headroom_mib": 1536}
     c.update(cfg)
     clock = Clock()
-    return elastic.Elastic(lambda: c, io, clock=clock), c, clock
+    el = elastic.Elastic(lambda: c, io, clock=clock)
+    if not fresh:
+        el._calm_others = 0
+    return el, c, clock
 
 
 def swaps(io):
@@ -850,6 +863,47 @@ class NoReasonTest(unittest.TestCase):
             clock.t += 30
             el.tick()
         self.assertEqual(swaps(io), [("swap", "big", 2)])
+
+
+class FirstLookTest(unittest.TestCase):
+    """Turned on with the model already loaded (or the panel restarted under
+    a running router): the first look is the baseline, not a squeeze."""
+    def test_pressure_on_the_first_look_with_no_growth_is_left_alone(self):
+        # 16 GiB GPU, a 15.5 GB model, 300 MiB of other apps, on from tick 1
+        io = FakeIO(); tight(io, FULL)
+        el, _, clock = controller(io, fresh=True)
+        for _ in range(40):
+            clock.t += 5
+            el.tick()
+        self.assertEqual(swaps(io), [])
+        self.assertEqual(el.status()["models"][0]["at"], 0)
+
+    def test_a_real_app_after_the_first_look_shrinks_and_grows_back(self):
+        io = FakeIO(); tight(io, FULL)
+        el, _, clock = controller(io, fresh=True)
+        el.tick()                                               # the baseline, under pressure
+        io.others += 3 * GiB
+        el.tick(); el.tick()
+        self.assertEqual(swaps(io), [("swap", "big", 1)])
+        io.calls.clear()
+        io.others -= 3 * GiB
+        for _ in range(GROW_TICKS):
+            clock.t += 30
+            el.tick()
+        self.assertEqual(swaps(io), [("swap", "big", 0)])
+
+    def test_turning_it_on_again_takes_a_fresh_look(self):
+        io = FakeIO(); tight(io, FULL)
+        el, c, clock = controller(io, fresh=True)
+        el.tick()
+        c["elastic_vram"] = False
+        el.tick()
+        io.others += 1 * GiB                                    # an app started while off
+        c["elastic_vram"] = True
+        for _ in range(10):
+            clock.t += 5
+            el.tick()
+        self.assertEqual(swaps(io), [])
 
 
 if __name__ == "__main__":

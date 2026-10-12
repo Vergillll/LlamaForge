@@ -175,6 +175,8 @@ class Elastic:
                 self._io.tidy()
             except Exception as e:
                 _warn("tidy failed", e)
+            if not enabled or standby:   # turning it on again takes a fresh first look
+                self._calm_others = self._calm_free = None
             if not enabled:
                 self._shrink_hits = self._grow_hits = 0
                 snap, models, others = self._look(waiting=True)
@@ -207,7 +209,9 @@ class Elastic:
             free = {g: s["total"] - s["used"] for g, s in snap.items()}
             if any(v < head / 2 for v in free.values()):
                 self._grow_hits = 0
-                if self._calm_others is not None and total <= self._calm_others + GROWTH_MIN_MIB:
+                if self._calm_others is None:    # the first look (just turned on, or the panel
+                    self._calm_others = total    # restarted): what's here is the baseline,
+                if total <= self._calm_others + GROWTH_MIN_MIB:   # not a squeeze
                     self._shrink_hits = 0    # full of our own models: nobody needs the room
                     self._calm_free = free
                     return
