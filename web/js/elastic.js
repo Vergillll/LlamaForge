@@ -9,6 +9,8 @@ function resized(st, id) {
   return (e && (e.models || []).find(m => m.id === id && m.at > 0)) || null;
 }
 
+const swapping = (st, id) => Boolean(st && st.elastic && st.elastic.swapping === id);
+
 // "40/64 on GPU", or "48/48 on GPU, experts of 20 on CPU" for an expert step:
 // the label is "<gpu>/<layers>" plus what else moved.
 function where(m, suffix) {
@@ -17,11 +19,15 @@ function where(m, suffix) {
   return `${frac}${suffix}${rest}`;
 }
 
-export function statusText(e) {
+/** The Setup card's "now" line. `grow`: the elastic_grow setting (default on);
+ *  with it off a model only grows back when the user clicks its chip. */
+export function statusText(e, {grow = true} = {}) {
   if (!e) return "off";
   if (!e.enabled) {
     const w = e.waiting || [];
-    return w.length ? `off · ${w.join(", ")} ${w.length === 1 ? "goes" : "go"} back to full size once it fits` : "off";
+    if (!w.length) return "off";
+    return `off · ${w.join(", ")} ` + (w.length === 1
+      ? "goes back to full size once it fits" : "go back to full size once they fit");
   }
   if (e.standby) return "standing by while Game mode is active";
   if (e.swapping) return `resizing ${e.swapping}...`;
@@ -29,7 +35,14 @@ export function statusText(e) {
   if (!s.length) return "on · no model resized";
   const others = Object.values(e.others_mib || {}).reduce((a, b) => a + b, 0);
   return s.map(m => `${m.id}: ${where(m, " layers on GPU")}`).join(" · ")
-    + ` (other apps use ${gb(others)} GB). Slower until it grows back.`;
+    + ` (other apps use ${gb(others)} GB). `
+    + (grow ? "Slower until it grows back."
+            : "Slower until you grow it back by clicking its dashboard chip (automatic grow-back is off).");
+}
+
+/** Whether the "now" line deserves the amber warn colour. */
+export function statusWarn(e) {
+  return Boolean(e && (e.swapping || (e.models || []).some(m => m.at > 0)));
 }
 
 /** Why Elastic can't do anything here, or "" when it can (or we can't tell yet). */
@@ -45,6 +58,8 @@ export function gpuNote(st) {
 
 /** The dashboard chip; clicking it grows the model back now. */
 export function chip(st, m) {
+  if (swapping(st, m.id))
+    return `<button type="button" class="tag elastic" disabled title="Elastic VRAM is reloading this model at a new size" aria-label="Resizing">resizing…</button>`;
   const r = resized(st, m.id);
   if (!r) return "";
   const tip = "Elastic VRAM moved layers to the CPU while other apps needed the GPU, so it's slower. Click to grow it back now, if it fits.";
@@ -53,6 +68,7 @@ export function chip(st, m) {
 
 /** Everything chip() reads, for the row's change signature. */
 export function chipSig(st, m) {
+  if (swapping(st, m.id)) return ["resizing"];
   const r = resized(st, m.id);
   return r ? [r.gpu_layers, r.layers, r.label] : "";
 }
