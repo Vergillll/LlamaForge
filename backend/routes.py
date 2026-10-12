@@ -2841,7 +2841,29 @@ def _el_pending(old, new):
         if k not in keys:
             keys[k] = v
             was[k] = (new.get("was") or {}).get(k)
-    return {"keys": keys, "was": was} if keys else None
+    return _el_with_room({"keys": keys, "was": was}, old.get("room")) if keys else None
+
+
+def _el_with_room(rec, room):
+    """rec plus the free MiB per GPU the model had at the user's own settings
+    before its first shrink (the controller grows back to that). It lives
+    under the record's "room", which plan_keys never reads as an ini key, so
+    it goes exactly when the record goes: back at the top, give-up, tidy."""
+    if rec and room:
+        rec["room"] = {str(g): int(v) for g, v in room.items()}
+    return rec
+
+
+def _el_room(rec):
+    """A record's room with the GPU ids the snapshot uses (JSON made them
+    strings), or None."""
+    room = (rec or {}).get("room")
+    if not isinstance(room, dict) or not room:
+        return None
+    try:
+        return {int(g) if str(g).isdigit() else g: int(v) for g, v in room.items()}
+    except (TypeError, ValueError):
+        return None
 
 
 def _el_spelt(section, keys):
@@ -2923,7 +2945,7 @@ def _el_models(gpus):
             measured.append(_el_measured(SLOTS.store.measured(footprint.key(mid, build, s)), gpus))
             predicted.append(int(footprint.predict(s, lay)["need_mib"]))
         out.append({"id": mid, "steps": steps, "at": _el_at(secs.get(mid) or {}, rec, steps),
-                    "fps": elastic.footprints(measured, predicted, gpus)})
+                    "fps": elastic.footprints(measured, predicted, gpus), "room": _el_room(rec)})
     return out
 
 
@@ -2958,9 +2980,10 @@ def _el_save(mid):
     return {"files": files, "note": "; ".join(notes)}
 
 
-def _el_swap(mid, step):
+def _el_swap(mid, step, room=None):
     """Move mid to `step`: write the keys (recorded so they can be put back; a
-    user edit wins), reload the preset, load. "" on success, else why not. On
+    user edit wins, along with `room`, else the room already recorded), reload
+    the preset, load. "" on success, else why not. On
     a single-model router, measure the step's footprint around the load - the
     pool's slot manager records its own.
 
@@ -2976,6 +2999,7 @@ def _el_swap(mid, step):
     old = _el_placed().get(mid)
     sec = config.read_sections(ini, raw=True).get(mid) or {}
     writes, rec = elastic.plan_keys(sec, old, step["keys"])
+    rec = _el_with_room(rec, room or (old or {}).get("room"))
     if writes:
         _el_record(mid, _el_pending(old, rec))
         try:
@@ -3090,7 +3114,7 @@ class _ElasticIO:
     def game_active(self):        return bool(GAMEMODE.status().get("active"))
     def tidy(self):               return _el_tidy()
     def save(self, mid):          return _el_save(mid)
-    def swap(self, mid, step):    return _el_swap(mid, step)
+    def swap(self, mid, step, room=None): return _el_swap(mid, step, room)
     def restore(self, mid, h):    return _el_restore(mid, h)
     def drop(self, h):            return _el_drop(h)
     def giveup(self, mid):        return _el_giveup(mid)

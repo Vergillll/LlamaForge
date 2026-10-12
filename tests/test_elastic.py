@@ -408,7 +408,7 @@ class ExceptionSafetyTest(unittest.TestCase):
     def test_a_raising_swap_counts_as_a_failed_load(self):
         io = QuietGiveupIO(others=4)
 
-        def boom(mid, step):
+        def boom(mid, step, room=None):
             io.calls.append(("swap", mid, LADDER.index(step)))
             raise OSError("boom")
         io.swap = boom
@@ -902,6 +902,63 @@ class FirstLookTest(unittest.TestCase):
         c["elastic_vram"] = True
         for _ in range(10):
             clock.t += 5
+            el.tick()
+        self.assertEqual(swaps(io), [])
+
+
+class RoomKeptTest(unittest.TestCase):
+    """The room a full model had is kept with its record, so a panel restart
+    while it's shrunk still lets it grow back."""
+    def shrunk(self):
+        io = FakeIO(); tight(io, FULL)
+        el, _, _ = controller(io, fresh=True)
+        el.tick()
+        io.others += 3 * GiB
+        el.tick(); el.tick()
+        self.assertEqual(swaps(io), [("swap", "big", 1)])
+        self.assertEqual(io.room, {"big": {0: 212}})            # handed to the record
+        io.calls.clear()
+        return io
+
+    def test_a_restarted_controller_grows_back_with_the_kept_room(self):
+        io = self.shrunk()
+        el, _, clock = controller(io, fresh=True)                           # the panel restarted
+        io.others -= 3 * GiB
+        for _ in range(GROW_TICKS):
+            clock.t += 30
+            el.tick()
+        self.assertEqual(swaps(io), [("swap", "big", 0)])
+        self.assertEqual(io.room, {})
+
+    def test_grow_now_after_a_restart_uses_the_kept_room(self):
+        io = self.shrunk()
+        el, _, _ = controller(io, fresh=True)
+        io.others -= 3 * GiB
+        self.assertEqual(el.grow_now("big"), {"ok": True, "to": "64/64"})
+
+    def test_turning_off_after_a_restart_uses_the_kept_room(self):
+        io = self.shrunk()
+        el, _, _ = controller(io, fresh=True, elastic_vram=False)
+        io.others -= 3 * GiB
+        el.tick()
+        self.assertEqual(swaps(io), [("swap", "big", 0)])
+
+    def test_a_deeper_shrink_keeps_the_room(self):
+        io = self.shrunk()
+        el, _, clock = controller(io, fresh=True)
+        el.tick()                                               # baseline: still squeezed
+        io.others += 6 * GiB                                    # squeezed further
+        el.tick(); el.tick()
+        self.assertGreater(swaps(io)[-1][2], 1)
+        self.assertEqual(io.room, {"big": {0: 212}})            # still the room at its own step
+
+    def test_without_a_kept_room_a_restart_needs_the_full_margin(self):
+        io = self.shrunk()
+        io.room.clear()
+        el, _, clock = controller(io, fresh=True)
+        io.others -= 3 * GiB
+        for _ in range(GROW_TICKS):
+            clock.t += 30
             el.tick()
         self.assertEqual(swaps(io), [])
 

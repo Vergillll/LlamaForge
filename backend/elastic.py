@@ -294,8 +294,9 @@ class Elastic:
     def _grow_to(self, snap, others, models, m, head):
         """The largest step m fits at with `head` left free. Its own step 0
         needs no more free than the user had there before the squeeze (a
-        model that nearly fills the GPU never had head + margin)."""
-        room = self._room.get(m["id"])
+        model that nearly fills the GPU never had head + margin). The room
+        comes back with the model's record after a panel restart."""
+        room = self._room.get(m["id"]) or m.get("room")
         if room:
             h0 = {g: head if room.get(g) is None else min(head, max(0, room[g] - GROWTH_MIN_MIB))
                   for g in snap}
@@ -346,7 +347,7 @@ class Elastic:
                 return m, j
         for m in models:                 # shrunk before a panel restart: no history
             if m["at"] > 0 and m["id"] not in self._order:
-                j = choose(m["fps"], self._budget(snap, others, models, m, head + GROW_MARGIN_MIB), 0)
+                j = self._grow_to(snap, others, models, m, head + GROW_MARGIN_MIB)
                 if j is not None and j < m["at"]:
                     return m, j
         return None
@@ -372,7 +373,7 @@ class Elastic:
                     notes.append(f"conversation not kept: {type(e).__name__}: {e}")
             for i in range(j, len(steps)):
                 try:
-                    err = self._io.swap(mid, steps[i])
+                    err = self._io.swap(mid, steps[i], self._room.get(mid))
                 except Exception as e:
                     err = f"{type(e).__name__}: {e}"
                 if not err:
