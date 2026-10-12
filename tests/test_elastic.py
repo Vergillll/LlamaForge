@@ -685,6 +685,58 @@ class RobustnessTest(unittest.TestCase):
         self.assertEqual((m["at"], m["steps"], m["full"]), (1, len(LADDER), "64/64"))
 
 
+class FreshStatusTest(unittest.TestCase):
+    """Every tick leaves status() saying what is true now."""
+    def shrunk(self):
+        io = FakeIO(others=4); el, c, clock = controller(io)
+        el.tick(); el.tick(); el.tick()
+        self.assertEqual(el.status()["models"][0]["at"], 1)
+        return io, el, c, clock
+
+    def test_turned_off_grow_back_updates_the_chip_at_once(self):
+        io, el, c, clock = self.shrunk()
+        c["elastic_vram"] = False
+        io.others = 1 * GiB
+        clock.t += 200
+        el.tick()                                               # grows it back to 0
+        st = el.status()
+        self.assertEqual([(m["id"], m["at"]) for m in st["models"]], [("big", 0)])
+        self.assertEqual(st["waiting"], [])
+
+    def test_grow_now_updates_the_chip_at_once(self):
+        io, el, _, _ = self.shrunk()
+        io.others = 1 * GiB
+        self.assertTrue(el.grow_now("big")["ok"])
+        self.assertEqual(el.status()["models"][0]["at"], 0)
+
+    def test_nothing_to_look_at_clears_the_models(self):
+        for on in (True, False):
+            io, el, c, clock = self.shrunk()
+            c["elastic_vram"] = on
+            io.snapshot = lambda: {}                            # nothing of ours left
+            el.tick()
+            st = el.status()
+            self.assertEqual((st["models"], st["waiting"], st["others_mib"]), ([], [], {}), on)
+
+    def test_a_failed_look_clears_the_models(self):
+        io, el, _, _ = self.shrunk()
+
+        def boom():
+            raise OSError("nvidia-smi hung")
+        io.snapshot = boom
+        with mock.patch("sys.stderr", new_callable=_io.StringIO):
+            el.safe_tick()
+        self.assertEqual(el.status()["models"], [])
+
+    def test_standby_clears_the_models(self):
+        io, el, _, _ = self.shrunk()
+        io.game = True                                          # Game mode unloads everything
+        el.tick()
+        st = el.status()
+        self.assertTrue(st["standby"])
+        self.assertEqual(st["models"], [])
+
+
 GROW_TICKS = elastic.GROW_HITS + 5
 
 

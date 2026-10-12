@@ -177,38 +177,28 @@ class Elastic:
                 _warn("tidy failed", e)
             if not enabled:
                 self._shrink_hits = self._grow_hits = 0
-                snap = self._io.snapshot()
+                snap, models, others = self._look(waiting=True)
                 if not snap:
                     return
                 head = int(c.get("elastic_headroom_mib", 1536))
-                models = [m for m in self._io.models(list(snap)) if m["steps"]]
-                others = self._others_of(snap, models)
                 self._forgive(models)
-                waiting = [m["id"] for m in models if m["at"] > 0]
-                with self._lock:
-                    self._models, self._others, self._waiting = models, others, waiting
                 if self._last_change is not None and self._clock() - self._last_change < self._cooldown:
                     return               # backs off like a grow: a failed load doubles it
                 for m in models:         # turned off while shrunk: one model per tick, only
                     if m["at"] > 0 and self._grow_to(    # when its own step fits again
                             snap, others, models, m, head) == 0:
-                        ev = self._move(c, m, 0, "Elastic VRAM was turned off")
-                        if ev["ok"] and ev["to"] == label(m["steps"][0]):
-                            with self._lock:
-                                self._waiting = [w for w in waiting if w != m["id"]]
+                        self._move(c, m, 0, "Elastic VRAM was turned off")
+                        self._relook(snap, waiting=True)
                         break
                 return
             if standby:                  # Game mode unloads everything anyway
                 self._shrink_hits = self._grow_hits = 0
+                self._show([], {}, [])
                 return
-            snap = self._io.snapshot()
+            snap, models, others = self._look(waiting=False)
             if not snap:
                 return
-            models = [m for m in self._io.models(list(snap)) if m["steps"]]
-            others = self._others_of(snap, models)
             self._forgive(models)
-            with self._lock:
-                self._models, self._others, self._waiting = models, others, []
             now = self._clock()
             if self._last_change is not None and now - self._last_change >= CALM_RESET_S:
                 self._cooldown = COOLDOWN_S
@@ -224,7 +214,8 @@ class Elastic:
                 self._shrink_hits += 1
                 if self._shrink_hits >= SHRINK_HITS:
                     self._shrink_hits = 0
-                    self._shrink(c, snap, others, models, head)
+                    if self._shrink(c, snap, others, models, head):
+                        self._relook(snap, waiting=False)
                 return
             self._shrink_hits = 0
             self._calm_others, self._calm_free = total, free
@@ -237,6 +228,36 @@ class Elastic:
                     self._last_change is None or now - self._last_change >= self._cooldown):
                 self._grow_hits = 0
                 self._move(c, pick[0], pick[1], "other apps freed VRAM")
+                self._relook(snap, waiting=False)
+
+    def _show(self, models, others, waiting):
+        with self._lock:
+            self._models, self._others, self._waiting = models, others, waiting
+
+    def _look(self, waiting):
+        """One snapshot and the resizable models on it, shown by status() (with
+        the resized ones as `waiting` while Elastic is off). Nothing to see, or
+        a look that fails, clears what status() shows."""
+        try:
+            snap = self._io.snapshot()
+            models = [m for m in self._io.models(list(snap)) if m["steps"]] if snap else []
+        except Exception:
+            self._show([], {}, [])
+            raise
+        others = self._others_of(snap, models) if snap else {}
+        self._show(models, others, [m["id"] for m in models if m["at"] > 0] if waiting else [])
+        return snap, models, others
+
+    def _relook(self, snap, waiting):
+        """After a move: the models where they are now (other apps as last seen)."""
+        try:
+            models = [m for m in self._io.models(list(snap)) if m["steps"]]
+        except Exception as e:
+            _warn("reading models after a resize failed", e)
+            models = []
+        with self._lock:
+            self._models = models
+            self._waiting = [m["id"] for m in models if m["at"] > 0] if waiting else []
 
     def _forgive(self, models):
         """A model that is loaded at its own settings again (the user reloaded
@@ -293,7 +314,7 @@ class Elastic:
             if freed > 0 and (best is None or freed > best[2]):
                 best = (m, j, freed)
         if best is None:
-            return
+            return False
         m, j, _ = best
         if self._last_grow is not None and self._clock() - self._last_grow < THRASH_WINDOW_S:
             self._cooldown = min(self._cooldown * 2, COOLDOWN_MAX_S)
@@ -304,6 +325,7 @@ class Elastic:
         if m["id"] not in self._order:
             self._order.append(m["id"])
         self._move(c, m, j, f"other apps use {total / 1024:.1f} GB")
+        return True
 
     def _grow_pick(self, snap, others, models, head):
         by_id = {m["id"]: m for m in models}
@@ -417,6 +439,7 @@ class Elastic:
                 self._log(mid, here, here, "you asked", 0, False, None, note)
                 return {"ok": False, "error": note}
             ev = self._move(c, m, j, "you asked")
+            self._relook(snap, waiting=not c.get("elastic_vram"))
             return {"ok": ev["ok"], "to": ev["to"]}
 
     def safe_grow(self, mid):
