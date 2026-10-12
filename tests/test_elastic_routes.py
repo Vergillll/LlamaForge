@@ -418,6 +418,18 @@ class ModelsTest(TempConfig):
         ms, _ = self.models({(0,): {0: 5000}, (1,): {1: 9000}}, gpus=(0, 1))
         self.assertEqual(ms[0]["fps"][0], {1: 9000})            # else the largest
 
+    def test_a_model_still_loading_is_not_resized(self):
+        import routes
+        config.update({"elastic_vram": True})
+        for state, want in (("loading", []), ("loaded", ["big"]), ("sleeping", ["big"])):
+            listing = {"data": [{"id": "big", "status": {"value": state}}]}
+            with mock.patch.object(routes, "router", return_value=(200, listing)), \
+                 mock.patch.object(routes.PROCS, "has", return_value=False), \
+                 mock.patch.object(routes, "_el_layout", return_value=LAYOUT), \
+                 mock.patch.object(routes.footprint, "predict", return_value={"need_mib": 8000}), \
+                 mock.patch.object(routes.SLOTS.store, "measured", return_value={}):
+                self.assertEqual([m["id"] for m in routes._el_models([0])], want, state)
+
     def test_off_with_nothing_placed_costs_nothing(self):
         import routes
         with mock.patch.object(routes, "_router_loaded_ids",
@@ -453,6 +465,18 @@ class SnapshotTest(TempConfig):
         with mock.patch.object(routes.osplat, "IS_MAC", False), \
              mock.patch.object(routes, "_gpu_telemetry", return_value=self.TELE):
             self.assertEqual(len(routes._el_snapshot()), 2)
+
+    def test_an_na_column_does_not_break_the_look(self):
+        # utilization / temperature read [N/A] on some cards: used/total still count
+        import routes
+        config.update({"elastic_vram": True})
+        out = "0, RTX A, 3000, 16303, [N/A], [N/A]\n1, RTX B, [N/A], 16311, 3, 40\n"
+        with mock.patch.object(routes.osplat, "IS_MAC", False), \
+             mock.patch.object(routes.subprocess, "check_output", return_value=out):
+            tele = routes._gpu_telemetry()
+            self.assertEqual(routes._el_snapshot(), {0: {"used": 3000, "total": 16303}})
+        self.assertEqual(tele, [{"index": 0, "name": "RTX A", "used": 3000, "total": 16303,
+                                 "util": None, "temp": None}])
 
     def test_nvidia_smi_opens_no_console_window_on_windows(self):
         import routes

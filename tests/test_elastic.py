@@ -361,6 +361,9 @@ class GrowTest(unittest.TestCase):
     def test_grow_now_on_a_model_that_is_not_shrunk(self):
         io = FakeIO(); el, _, _ = controller(io)
         self.assertFalse(el.grow_now("big")["ok"])
+        ev = el.status()["events"][0]                           # the log says why nothing happened
+        self.assertEqual((ev["model"], ev["reason"], ev["ok"]), ("big", "you asked", False))
+        self.assertIn("big isn't resized any more", ev["note"])
 
 
 class StatusTest(unittest.TestCase):

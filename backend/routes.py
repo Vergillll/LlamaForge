@@ -251,12 +251,20 @@ def _gpu_telemetry():
             creationflags=router_ctl.CREATE_NO_WINDOW if osplat.IS_WIN else 0)
     except Exception as e:
         return [{"error": str(e)}]
+    def num(v):
+        try:
+            return int(v)
+        except ValueError:            # "[N/A]" on cards that don't report it
+            return None
     res = []
     for ln in out.strip().splitlines():
         f = [x.strip() for x in ln.split(",")]
         if len(f) >= 6:
-            res.append({"index": int(f[0]), "name": f[1], "used": int(f[2]),
-                        "total": int(f[3]), "util": int(f[4]), "temp": int(f[5])})
+            index, used, total = num(f[0]), num(f[2]), num(f[3])
+            if None in (index, used, total):
+                continue              # a GPU without memory figures tells us nothing
+            res.append({"index": index, "name": f[1], "used": used,
+                        "total": total, "util": num(f[4]), "temp": num(f[5])})
     return res
 
 
@@ -1358,11 +1366,11 @@ def post_unload(req):
     return (200 if code == 200 else 400), res
 
 
-def _router_loaded_ids():
+def _router_loaded_ids(states=("loaded", "loading", "sleeping")):
     st, data = router("/models")
     return [m["id"] for m in data.get("data", [])
             if st == 200 and m.get("id") != "default"
-            and m.get("status", {}).get("value") in ("loaded", "loading", "sleeping")]
+            and m.get("status", {}).get("value") in states]
 
 
 def post_unload_all(req):
@@ -2900,7 +2908,7 @@ def _el_models(gpus):
     secs = config.read_sections(_el_ini())
     build = SLOTS.build_id(_active_server_bin(c))
     out = []
-    for mid in _router_loaded_ids():
+    for mid in _router_loaded_ids(("loaded", "sleeping")):   # not one still loading
         if PROCS.has(mid) or mid not in secs:
             continue
         rec = placed.get(mid)

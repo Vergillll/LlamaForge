@@ -429,7 +429,10 @@ class Elastic:
             models = [m for m in self._io.models(list(snap)) if m["steps"]]
             m = next((x for x in models if x["id"] == mid), None)
             if not m or m["at"] == 0:
-                return {"ok": False, "error": f"{mid} isn't resized"}
+                note = f"{mid} isn't resized any more"
+                here = label(m["steps"][0]) if m else ""
+                self._log(mid, here, here, "you asked", 0, False, None, note)
+                return {"ok": False, "error": note}
             others = self._others_of(snap, models)
             head = int(c.get("elastic_headroom_mib", 1536))
             j = self._grow_to(snap, others, models, m, head)
