@@ -71,12 +71,17 @@ order: 1
 | `game_mode_keep` | list | `[]` | Model ids Game mode leaves loaded. |
 | `game_mode_games` | list | `[]` | Extra executable names that count as games, e.g. `eldenring.exe`. |
 | `game_mode_restore` | bool | `True` | Load the unloaded models again when the game closes. |
+| `elastic_vram` | bool | `False` | Move a loaded model's layers to the CPU when other apps need VRAM, and back after (Setup > Elastic VRAM). NVIDIA only. |
+| `elastic_grow` | bool | `True` | Grow resized models back automatically once the VRAM is free. Off: only the dashboard chip grows them back. |
+| `elastic_keep_conversation` | bool | `True` | Save and restore the model's conversation (slot state) around each resize. Needs a router started with `--slot-save-path`. |
+| `elastic_headroom_mib` | int | `1536` | VRAM to keep free on each GPU, 512-16384 MiB. A model shrinks when less than half of it is free. |
+| `elastic_placed` | object | `{}` | Internal: the `models.ini` keys Elastic VRAM wrote per model and the values they replaced, so they can be taken out again. Not writable from the browser. |
 
-56 keys total, matching `DEFAULTS` in `backend/config.py`.
+64 keys total, matching `DEFAULTS` in `backend/config.py`.
 
 `prebuilt_channel` (`"nightly"` or `"stable"`, the channel the Build / Update tab's prebuilt-engine card follows) is not in `DEFAULTS`: it is written the first time you install a prebuilt engine, and the card reads it as `"nightly"` until then.
 
-`POST /api/config` accepts only the settings the dashboard itself changes: `ui_mode`, `theme`, `cvd`, `skin`, `onboarded`, `auto_load_model`, `wsl_distro`, `vllm_port`, `model_dirs`, `anthropic_default_model`, `anthropic_shim_enabled`, `vram_bandwidths`, `vram_predict_enabled`, `multi_model`, `slot_cap`, `slot_headroom_mib`, `slot_autoload`, `game_mode`, `game_mode_keep`, `game_mode_games` and `game_mode_restore`. Any other key is refused and named in the response; the rest are edited by their own endpoints or by hand in `config.json`.
+`POST /api/config` accepts only the settings the dashboard itself changes: `ui_mode`, `theme`, `cvd`, `skin`, `onboarded`, `auto_load_model`, `wsl_distro`, `vllm_port`, `model_dirs`, `anthropic_default_model`, `anthropic_shim_enabled`, `vram_bandwidths`, `vram_predict_enabled`, `multi_model`, `slot_cap`, `slot_headroom_mib`, `slot_autoload`, `elastic_vram`, `elastic_grow`, `elastic_keep_conversation`, `elastic_headroom_mib`, `game_mode`, `game_mode_keep`, `game_mode_games` and `game_mode_restore`. Any other key is refused and named in the response; the rest are edited by their own endpoints or by hand in `config.json`.
 
 ## Preset bindings
 
