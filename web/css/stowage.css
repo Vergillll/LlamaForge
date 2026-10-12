@@ -396,6 +396,20 @@
 /* inputs: square, values stay mono */
 :where(:root[data-skin="stowage"]) :where(input:not([type=checkbox]):not([type=radio]),select,textarea){border-radius:0;padding:7px 10px}
 :root[data-skin="stowage"] .fld input,:root[data-skin="stowage"] .fld select{border-radius:0;padding:7px 10px}
+/* quick access strips: flat panel, 1px rules, condensed caps like the knob groups */
+:root[data-skin="stowage"] :is(.qstrips,.qmore){border-radius:0;box-shadow:none}
+:root[data-skin="stowage"] .qhead{background:transparent}
+:root[data-skin="stowage"] .qtitle{font-family:var(--cond);font-weight:700;font-size:16px;letter-spacing:.05em;color:var(--ink-strong)}
+:root[data-skin="stowage"] .qhint{font-size:12.5px;line-height:1.4}
+:root[data-skin="stowage"] .qlab{font-family:var(--cond);font-weight:600;font-size:13px;letter-spacing:.07em}
+:root[data-skin="stowage"] .qkey{font-size:11px}
+:root[data-skin="stowage"] .qf input,:root[data-skin="stowage"] .qf select{border-radius:0;padding:7px 10px}
+:root[data-skin="stowage"] .qrange{accent-color:var(--c-main)}
+:root[data-skin="stowage"] .qrange:focus-visible{outline-color:var(--focus)}
+:root[data-skin="stowage"] :is(.qmuted,.qticks,.qchanges,.qwarn){font-size:12px}
+:root[data-skin="stowage"] .qmore>summary{font-family:var(--cond);font-weight:600;font-size:15px;letter-spacing:.05em;text-transform:uppercase;
+  color:var(--ink-hi);background:transparent;padding:11px 14px}
+:root[data-skin="stowage"] .qmore>summary:hover{color:var(--ink-strong);background:var(--inset)}
 :root[data-skin="stowage"] :is(input,select,textarea):focus{border-color:var(--focus)}
 :root[data-skin="stowage"] input[type=checkbox],:root[data-skin="stowage"] input[type=radio]{accent-color:var(--c-w1)}
 

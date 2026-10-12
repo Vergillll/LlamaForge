@@ -14,9 +14,7 @@ import { activeTab } from "./ui.js";
 import * as slots from "./slots.js";
 import * as elastic from "./elastic.js";
 import { bayPlans, bayInputs } from "./bays.js";
-
-const LITE_KNOBS = new Set(["n-gpu-layers","ctx-size","cache-type-k","cache-type-v",
-  "flash-attn","batch-size","ubatch-size","threads","tensor-split","temp","top-p"]);
+import * as strips from "./quick.js";   // not "quick": the click handler has its own
 
 /* ---------- view-local state ---------- */
 let openId = localStorage.getItem("lf_openid") || null;   // expanded row, persisted
@@ -87,16 +85,18 @@ function knobField(m, k) {
   const v = curVal(m, k), isSet = v !== "";
   const ph = k.default ? `inherit (${k.default})` : "inherit";
   let ctrl;
+  // data-orig: the server's value, so the editor can say what an edit changed
+  const orig = `data-orig="${esc(v)}"`;
   if (k.type === "enum") {
     const opts = [""].concat(k.options||[]).map(o => `<option value="${esc(o)}" ${String(o)===String(v)?"selected":""}>${o===""?"(inherit)":esc(o)}</option>`).join("");
-    ctrl = `<select data-k="${esc(k.key)}">${opts}</select>`;
+    ctrl = `<select data-k="${esc(k.key)}" ${orig}>${opts}</select>`;
   } else if (k.type === "bool") {
     const opts = ["","true","false"].map(o => `<option value="${o}" ${String(o)===String(v)?"selected":""}>${o===""?"(inherit)":o}</option>`).join("");
-    ctrl = `<select data-k="${esc(k.key)}">${opts}</select>`;
+    ctrl = `<select data-k="${esc(k.key)}" ${orig}>${opts}</select>`;
   } else {
-    ctrl = `<input data-k="${esc(k.key)}" value="${esc(v)}" placeholder="${esc(ph)}" ${(k.type==="int"||k.type==="float")?'inputmode="numeric"':''}>`;
+    ctrl = `<input data-k="${esc(k.key)}" ${orig} value="${esc(v)}" placeholder="${esc(ph)}" ${(k.type==="int"||k.type==="float")?'inputmode="numeric"':''}>`;
   }
-  return `<div class="fld ${isSet?"set":""}${LITE_KNOBS.has(k.key)?"":" advanced-only"}" data-desc="${esc((k.key+' '+k.desc).toLowerCase())}">
+  return `<div class="fld ${isSet?"set":""}" data-desc="${esc((k.key+' '+k.desc).toLowerCase())}">
     <label title="${esc(k.desc)}">${esc(k.key)}</label>${ctrl}
     ${k.desc?`<div class="hint" title="${esc(k.desc)}">${esc(k.desc)}</div>`:""}</div>`;
 }
@@ -109,26 +109,40 @@ function modelMeta(m) {
 }
 
 /* ---------- editor regions ----------------------------------------------
+   .ed-qload   quick access: Load strip                 - user state
+   .ed-qthink  quick access: Thinking + Vision switches - server state
+   .ed-qsamp   quick access: Sampling strip             - user state
    .ed-live    diagnosis / GGUF card / path / presets   - server state
    .ed-tools   knob filter box                          - user state
    .ed-knobs   the knob fields themselves               - user state
    .ed-btns    action buttons (depend on load status)   - server state
+   [data-qchanges]  what the unsaved edits change       - written by handlers
    [data-msg]  status line                              - written by handlers
 
-   Only .ed-live, .ed-btns and .ed-note are refreshed on a poll. The knob grid
-   is built when the row opens and then left alone; rebuilding it discards
-   whatever the user has typed, so it happens only via invalidateKnobs(). */
-function knobGroups(m, schema) {
-  return schema.groups.map((g, gi) => {
-    const flds = g.knobs.map(k => knobField(m, k)).join("");
-    return `<details class="kgroup" ${gi===0?"open":""}><summary>${esc(g.name)} &middot; ${g.knobs.length}</summary><div class="kgrid">${flds}</div></details>`;
+   Only .ed-qthink, .ed-live, .ed-btns and .ed-note are refreshed on a poll. The
+   Load and Sampling strips and the knob grid are built when the row opens and
+   then left alone; rebuilding them discards whatever the user has typed, so it
+   happens only via invalidateKnobs(). The grid leaves out the keys the strips
+   own (strips.ownedKeys): one input per key, or Save would send whichever came
+   last. In Lite mode the strips are all there is. */
+let moreOpen = false;             // "More settings" disclosure, kept across rebuilds
+function knobGroups(m, schema, owned) {
+  let n = 0, groups = 0;
+  const html = schema.groups.map(g => {
+    const knobs = owned ? g.knobs.filter(k => !owned.has(k.key)) : g.knobs;
+    if (!knobs.length) return "";
+    n += knobs.length; groups++;
+    const flds = knobs.map(k => knobField(m, k)).join("");
+    return `<details class="kgroup" ${groups===1?"open":""}><summary>${esc(g.name)} &middot; ${knobs.length}</summary><div class="kgrid">${flds}</div></details>`;
   }).join("");
+  return {html, n, groups};
 }
 function editorLive(m) {
   return m.backend === "vllm"
     ? `${diagBlock(m)}${modelMeta(m)}`
-    : `${diagBlock(m)}${metaBlock(m)}${modelMeta(m)}${buildBar(m)}${thinkBar(m)}${visionBar(m)}${presetBar(m)}${autoTuneBar(m)}`;
+    : `${diagBlock(m)}${metaBlock(m)}${modelMeta(m)}${buildBar(m)}${presetBar(m)}${autoTuneBar(m)}`;
 }
+const thinkRegion = m => strips.thinkingStrip(m, metaCache[m.id], S.SCHEMA);
 function editorButtons(m) {
   if (m.backend === "vllm") {
     return `<button class="primary" data-act="vsave">Save${m.status==="loaded"?" + Restart":""}</button>
@@ -138,6 +152,7 @@ function editorButtons(m) {
       <button class="danger" data-act="vdelete" title="remove model + delete its files from WSL">Delete</button>`;
   }
   return `<button class="primary" data-act="save">Save + Reload</button>
+      <button class="ghost" data-act="revert" title="put every field back to what models.ini says">Revert</button>
       ${m.status==="loaded"||m.status==="loading"?`<button class="ghost" data-act="unload">${m.status==="loading"?"Cancel / Unload":"Unload"}</button>`:`<button data-act="load"${slots.slotsOn()?' title="load as the main model: it gets the fastest GPU that fits"':""}>Load</button>`}
       ${slots.canLoadWorker(m)?`<button class="ghost" data-act="loadw" title="load beside the main model, on the GPUs it doesn't use; never unloads anything">Load as worker</button>`:""}
       ${m.status==="loaded"?`<button data-act="chat">Chat</button>`:""}
@@ -170,38 +185,77 @@ function editorBlocked(m) {
   if (!S.SCHEMA) return `<div class="note">Loading knob schema...</div>`;
   if (S.SCHEMA.error) return `<div class="note" style="color:var(--red)">Could not read knobs from <code>llama-server --help</code>: ${esc(S.SCHEMA.error)}<br>Check <code>server_bin</code> in config.json - the schema is retried automatically once it's fixed.</div>`;
   if (!S.SCHEMA.groups || !S.SCHEMA.groups.length) return `<div class="note">llama-server --help returned no tunable arguments.</div>`;
+  // the strips take their slider ends and MoE/dense from the GGUF header: wait
+  // for it like for the schema, so they are built once and never under the user
+  if (metaCache[m.id] === undefined) { setTimeout(() => fetchMeta(m.id), 0); return `<div class="note">Reading GGUF header...</div>`; }
   return null;
 }
 function editor(m) {
   const blocked = editorBlocked(m);
   if (blocked !== null) return blocked;
-  const schema = m.backend === "vllm" ? S.VLLM_SCHEMA : S.SCHEMA;
-  const placeholder = m.backend === "vllm"
-    ? "filter knobs (e.g. tensor, memory, quant)..."
-    : "filter knobs (e.g. cache, rope, temp)...";
-  return `<div class="ed-slot">${slots.block(m, renderModels)}</div>
+  if (m.backend === "vllm") {
+    return `<div class="ed-slot">${slots.block(m, renderModels)}</div>
     <div class="ed-live">${editorLive(m)}</div>
     <div class="toolbar ed-tools">
-      <input class="search" data-knobfilter placeholder="${esc(placeholder)}">
+      <input class="search" data-knobfilter placeholder="filter knobs (e.g. tensor, memory, quant)...">
       <span class="chip ${onlySet?"on":""}" data-onlyset>Only set</span>
     </div>
-    <div class="ed-knobs">${knobGroups(m,schema)}</div>
+    <div class="ed-knobs">${knobGroups(m, S.VLLM_SCHEMA).html}</div>
     <div class="actions">
       <span class="ed-btns">${editorButtons(m)}</span>
       <span class="msg" data-msg></span>
     </div>
     <div class="ed-note">${editorNote(m)}</div>`;
+  }
+  const meta = metaCache[m.id], glob = (S.STATE || {}).global || {};
+  const grid = knobGroups(m, S.SCHEMA, strips.ownedKeys(S.SCHEMA));
+  return `<div class="ed-slot">${slots.block(m, renderModels)}</div>
+    <div class="qstrips">
+      <div class="ed-qload">${strips.loadStrip(m, meta, S.SCHEMA, glob)}</div>
+      <div class="ed-qthink">${thinkRegion(m)}</div>
+      <div class="ed-qsamp">${strips.samplingStrip(m, S.SCHEMA)}</div>
+    </div>
+    <div class="ed-live">${editorLive(m)}</div>
+    <div class="toolbar ed-tools advanced-only">
+      <input class="search" data-knobfilter placeholder="search all ${esc(String(S.SCHEMA.count || ""))} parameters (e.g. cache, rope, temp)...">
+      <span class="chip ${onlySet?"on":""}" data-onlyset>Only set</span>
+    </div>
+    <details class="qmore advanced-only" data-qmoregrid${moreOpen ? " open" : ""}>
+      <summary>More settings &middot; ${grid.n} in ${grid.groups} group${grid.groups === 1 ? "" : "s"}</summary>
+      <div class="ed-knobs">${grid.html}</div>
+    </details>
+    <div class="actions">
+      <span class="ed-btns">${editorButtons(m)}</span>
+      <span class="qchanges" data-qchanges aria-live="polite"></span>
+      <span class="msg" data-msg></span>
+    </div>
+    <div class="ed-note">${editorNote(m)}</div>`;
 }
 function applyKnobFilter(root) {
-  $$(".fld", root).forEach(f => {
+  $$(".fld,.qf,.qrow", root).forEach(f => {
+    if (f.dataset.desc == null) return;      // a field inside a strip row is matched by its row
     const hitQ = !kquery || f.dataset.desc.includes(kquery);
-    const hitSet = !onlySet || f.classList.contains("set");
+    // Only set narrows the grid; the strips stay whole
+    const hitSet = !onlySet || f.classList.contains("set") || !f.classList.contains("fld");
     f.style.display = (hitQ && hitSet) ? "" : "none";
   });
 }
 function filterKnobs(inp) {
   kquery = inp.value.trim().toLowerCase();
-  applyKnobFilter(inp.closest(".edit"));
+  const edit = inp.closest(".edit"), more = $("[data-qmoregrid]", edit);
+  if (kquery && more && !more.open) more.open = true;    // a search reaches into More settings
+  applyKnobFilter(edit);
+}
+// what the unsaved edits change, written beside Save; the strips' fields and the
+// grid's both carry data-orig
+function recount(row) {
+  const out = $("[data-qchanges]", row);
+  if (!out) return;
+  const list = strips.changes(row);
+  out.textContent = list.length ? strips.describeChanges(list) : "";
+  // the summary says it all; a leftover "unsaved changes" status would only repeat it
+  const msg = $("[data-msg]", row);
+  if (msg && /unsaved changes$/.test(msg.textContent)) { msg.textContent = ""; msg.className = "msg"; }
 }
 function toggleOnlySet(el) {
   onlySet = !onlySet;
@@ -273,7 +327,9 @@ function headSig(m, cols, showBackend) {
 function knobSig(m) {
   return JSON.stringify([m.id, m.backend, m.in_ini,
     m.backend === "vllm" ? (S.VLLM_SCHEMA ? S.VLLM_SCHEMA.count||0 : -1)
-                         : (S.SCHEMA ? S.SCHEMA.count||0 : -1), knobEpoch]);
+                         : (S.SCHEMA ? S.SCHEMA.count||0 : -1), knobEpoch,
+    // the strips wait for the GGUF header: built once it lands, not before
+    m.backend !== "vllm" && metaCache[m.id] !== undefined]);
 }
 
 function rowIdentity(backend, id) {
@@ -358,9 +414,11 @@ function syncEditor(row, m) {
   if (row._ks !== ks) {          // first open, or the schema/model actually changed
     setHTML(edit, editor(m));
     row._ks = ks;
-    row._slot = row._live = row._btns = row._note = null;
+    row._slot = row._think = row._live = row._btns = row._note = null;
+    recount(row);                // a change can be pending on open (see quick.js, fit = off)
   }
   const regions = [[".ed-slot", x => slots.block(x, renderModels), "_slot"],
+                   [".ed-qthink", thinkRegion, "_think"],
                    [".ed-live", editorLive, "_live"],
                    [".ed-btns", editorButtons, "_btns"],
                    [".ed-note", editorNote, "_note"]];
@@ -606,6 +664,9 @@ async function savePresetFrom(model) {
   const row = $(`.row[data-id="${CSS.escape(model)}"]`); if (!row) return;
   const settings = {};
   $$("[data-k]", row).forEach(el => { const v = el.value.trim(); if (v !== "") settings[el.dataset.k] = v; });
+  // the Thinking switches write at once and have no form field: take what is saved
+  const m = modelRows().find(x => x.id === model), saved = (m && m.settings) || {};
+  for (const k of strips.instantKeys()) if (saved[k] != null && settings[k] == null) settings[k] = String(saved[k]);
   if (!Object.keys(settings).length) { toast("No knobs set to save", "err"); return; }
   const name = await askText("Preset name", {title: "Save as preset", placeholder: "coding, creative, fast"});
   if (!name) return;
@@ -632,11 +693,15 @@ function compatNote(id) {
   return (c.arch_advice ? `<div class="slotnote warn"><b>Build:</b> ${esc(c.arch_advice)}</div>` : "")
        + (c.advice ? `<div class="slotnote warn"><b>Quant:</b> ${esc(c.advice)}</div>` : "");
 }
+const metaPending = new Set();    // one header read at a time per model, whatever the polls ask
 async function fetchMeta(id) {
+  if (metaPending.has(id)) return;
+  metaPending.add(id);
   try {
     const r = await api("/api/model/metadata?model=" + encodeURIComponent(id));
     metaCache[id] = r.metadata || {}; compatCache[id] = r.compat || null; buildsCache[id] = r.builds || null;
   } catch (e) { metaCache[id] = {}; }
+  metaPending.delete(id);
   if (openId === id) renderModels();
 }
 
@@ -702,53 +767,18 @@ async function setBuild(sel) {
 }
 
 /* ---------- thinking + vision -----------------------------------------------
-   One-click switches over knobs that already exist: Thinking writes llama.cpp's
-   reasoning / reasoning-budget (Auto and Unlimited remove the key, so the
+   One-click switches over knobs that already exist, drawn by strips.thinkingStrip:
+   Thinking writes llama.cpp's reasoning / reasoning-budget / reasoning-format /
+   reasoning-effort (Auto, Unlimited and the default remove the key, so the
    router's default applies); Vision parks the mmproj line server-side. Both
-   apply at once - a loaded model is unloaded so its next load picks it up. */
-const hasKnob = key => !!(S.SCHEMA && (S.SCHEMA.groups || []).some(g => g.knobs.some(k => k.key === key)));
-const THINK_MODES = [["", "Auto"], ["on", "On"], ["off", "Off"]];
-const THINK_BUDGETS = [["", "unlimited"], ["512", "512 tokens"], ["2048", "2k tokens"], ["8192", "8k tokens"]];
-function thinkBar(m) {
-  if (!m.in_ini || !hasKnob("reasoning")) return "";
-  const s = m.settings || {}, mode = s.reasoning || "", budget = s["reasoning-budget"] || "";
-  const meta = metaCache[m.id], kind = meta && meta.thinking;
-  // a template with no reasoning markers has nothing to switch; still shown if
-  // something was set, so it can be put back
-  if (meta && Object.keys(meta).length && !kind && !mode && !budget) return "";
-  const segs = THINK_MODES.map(([v, label]) =>
-    `<button class="qbtn" data-think-mode="${v}" data-think="${esc(m.id)}" aria-pressed="${mode === v}">${label}</button>`).join("");
-  let budgetSel = "";
-  if (hasKnob("reasoning-budget")) {
-    const opts = THINK_BUDGETS.slice();
-    const odd = {"0": "0 · no thinking", "-1": "unlimited (-1)"};   // llama.cpp's two special values
-    if (budget && !opts.some(([v]) => v === budget)) opts.push([budget, odd[budget] || `${budget} tokens`]);
-    budgetSel = `<select data-think-budget="${esc(m.id)}" title="most tokens it may think before answering"${mode === "off" ? " disabled" : ""}>`
-      + opts.map(([v, label]) => `<option value="${esc(v)}"${v === budget ? " selected" : ""}>${esc(label)}</option>`).join("") + `</select>`;
-  }
-  const hint = kind === "switch" ? "Its chat template has a thinking switch, so Off really turns it off."
-    : kind === "tags" ? "Its template shows thinking but has no switch: Off may not stop a model trained to always think."
-    : "";
-  return `<div class="tunebar">
-    <span class="tunebar-label" title="llama.cpp's --reasoning and --reasoning-budget. Auto lets the chat template decide.">Thinking</span>
-    <span class="tseg" role="group" aria-label="thinking">${segs}</span>${budgetSel}
-  </div>${hint ? `<div class="slotnote dim">${esc(hint)}</div>` : ""}`;
-}
-function visionBar(m) {
-  if (!m.in_ini) return "";
-  const on = !!(m.settings || {}).mmproj;
-  if (!on && !m.vision_off) return "";
-  const seg = (v, label) => `<button class="qbtn" data-vision="${esc(m.id)}" data-vision-on="${v}" aria-pressed="${on === v}">${label}</button>`;
-  return `<div class="tunebar">
-    <span class="tunebar-label" title="Loads the model's vision projector (mmproj). Off keeps the file on disk and frees its VRAM.">Vision</span>
-    <span class="tseg" role="group" aria-label="vision">${seg(true, "On")}${seg(false, "Off")}</span>
-  </div>${on ? "" : `<div class="slotnote dim">Off: text only. The projector file is kept; turn it back on any time.</div>`}`;
-}
+   apply at once - a loaded model is unloaded so its next load picks it up.
+   None of these keys has a field in the form (the grid leaves them out), so a
+   switch redraws only its own strip and the user's unsaved edits stay put. */
 async function applyToggle(row, id, label, call) {
   const m = modelRows().find(x => x.id === id);
   const up = m && (m.status === "loaded" || m.status === "loading" || m.status === "sleeping");
   if (up && !(await askYes(`Changing this unloads ${id}; its next load uses the new setting.`, {title: label, ok: "Change and unload"}))) {
-    if (row) row._live = null;                         // put the controls back
+    if (row) row._think = null;                        // put the controls back
     renderModels(); return;
   }
   const msg = row && $("[data-msg]", row);
@@ -757,13 +787,15 @@ async function applyToggle(row, id, label, call) {
   try { r = await call(); } catch (e) { r = {error: String(e)}; }
   if (r && r.ok) {
     if (msg) { msg.className = "msg ok"; msg.textContent = r.was_running ? `${label.toLowerCase()} saved - unloaded to apply` : `${label.toLowerCase()} saved - used on the next load`; }
-    delete diagCache[id]; invalidateKnobs(); slots.forget(id);
+    // no invalidateKnobs(): no form field holds these keys, and rebuilding the
+    // editor would throw away the unsaved edits in the Load and Sampling strips
+    delete diagCache[id]; slots.forget(id);
     toast(`${label} saved`, "ok");
   } else {
     if (msg) { msg.className = "msg err"; msg.textContent = (r && r.error) || "failed"; }
     toast((r && r.error) || `could not change ${label.toLowerCase()}`, "err");
   }
-  if (row) row._live = null;
+  if (row) row._think = null;
   await refresh(true);
 }
 const saveThinking = (row, id, settings) =>
@@ -790,11 +822,12 @@ function applyTuneResult(row, rec) {
   $$("[data-k]", row).forEach(el => {
     const k = el.dataset.k;
     if (knobs[k] != null && knobs[k] !== el.value) {
-      el.value = knobs[k];
+      strips.adopt(el, knobs[k]);       // a strip field in Auto flips to Set / Manual first
       if (el.value.trim()) el.classList.add("set");
       changed.push(k);
     }
   });
+  recount(row);
   const msg = $("[data-msg]", row);
   if (msg && changed.length) {
     msg.className = "msg work";
@@ -933,16 +966,23 @@ export function initModels() {
     if (pick) setBuild(pick);
     const tb = e.target.closest("#view-models [data-think-budget]");
     if (tb) saveThinking(tb.closest(".row"), tb.dataset.thinkBudget, {"reasoning-budget": tb.value});
+    const tk = e.target.closest("#view-models [data-think-key]");
+    if (tk) saveThinking(tk.closest(".row"), tk.dataset.think, {[tk.dataset.thinkKey]: tk.value});
   });
+  // "More settings" open or shut, kept for the next rebuild (toggle doesn't bubble)
+  document.addEventListener("toggle", e => {
+    if (e.target.matches && e.target.matches("#view-models [data-qmoregrid]")) moreOpen = e.target.open;
+  }, true);
 
   document.addEventListener("input", e => {
     // knob-filter box (dynamic, inside an open editor)
     if (e.target.matches("[data-knobfilter]")) { filterKnobs(e.target); return; }
-    // flag knob edits so the user knows a Save is pending
     const row = e.target.closest("#view-models .row.open");
-    if (!row || e.target.dataset.k == null) return;
-    const msg = $("[data-msg]", row);
-    if (msg) { msg.className = "msg work"; msg.textContent = "unsaved changes"; }
+    if (!row) return;
+    // a strip's slider and its box move together
+    if (e.target.dataset.qmirror != null || e.target.dataset.qlink != null) strips.mirror(e.target);
+    // say what a Save would change
+    if (e.target.dataset.k != null || e.target.dataset.qmirror != null) recount(row);
   });
 
   // keyboard map: 1-9 tabs (sidebar order), / search, j/k or arrows navigate, Enter expand,
@@ -1049,6 +1089,13 @@ export function initModels() {
     }
     const pSave = e.target.closest("[data-preset-save]");
     if (pSave) { e.stopPropagation(); await savePresetFrom(pSave.dataset.presetSave); return; }
+    // quick access: Auto/Set, Auto/Manual, a segmented field, the "6 more" row
+    const qMode = e.target.closest("#view-models [data-qmode]");
+    if (qMode) { e.stopPropagation(); strips.setMode(qMode); recount(qMode.closest(".row")); return; }
+    const qSeg = e.target.closest("#view-models [data-qseg]");
+    if (qSeg) { e.stopPropagation(); strips.setSeg(qSeg); recount(qSeg.closest(".row")); return; }
+    const qMore = e.target.closest("#view-models [data-qmore]");
+    if (qMore) { e.stopPropagation(); strips.toggleMore(qMore); return; }
     // thinking / vision switches
     const tMode = e.target.closest("#view-models [data-think-mode]");
     if (tMode) {
@@ -1079,6 +1126,11 @@ export function initModels() {
     if (act === "profile") { emit("profile-save", {id, backend: row.dataset.backend}); return; }
     const clientOpening = act === "client"
       ? openClientConfig(id, row.dataset.backend) : null;
+    if (act === "revert") {          // rebuild from the server's state: every edit goes
+      invalidateKnobs(); renderModels();
+      const m2 = $("[data-msg]", row); if (m2) { m2.className = "msg"; m2.textContent = ""; }
+      return;
+    }
     btn.disabled = true;
     try {
       if (act === "save") {

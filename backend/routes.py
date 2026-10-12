@@ -358,6 +358,33 @@ def vllm_save(model_id, settings, is_running, restart):
 
 
 # ---------- model list (router status + ini settings) ----------
+# What a loaded instance says about itself: the context each slot got and how
+# many slots, from its own /props. That is the context --fit settled on when
+# ctx-size was left to it. Read once per load, not on every poll, and kept after
+# the unload so the editor can still show what the last load got.
+_RUNTIME = {}                   # model id -> {"n_ctx_slot", "n_slots"}
+_RUNTIME_LIVE = set()           # ids whose running instance has been read
+
+
+def _runtime(mid, status):
+    if status != "loaded":
+        _RUNTIME_LIVE.discard(mid)
+        return _RUNTIME.get(mid)
+    if mid not in _RUNTIME_LIVE:
+        # autoload=false: reading props must never load (or evict for) a model
+        code, props = router("/props?model=" + urllib.parse.quote(mid, safe="")
+                             + "&autoload=false", timeout=3)
+        dgs = props.get("default_generation_settings") if isinstance(props, dict) else None
+        try:
+            n_ctx, n_slots = int(dgs["n_ctx"]), int(props.get("total_slots") or 1)
+        except (TypeError, KeyError, ValueError):
+            n_ctx = 0
+        if code == 200 and n_ctx > 0:
+            _RUNTIME[mid] = {"n_ctx_slot": n_ctx, "n_slots": max(n_slots, 1)}
+            _RUNTIME_LIVE.add(mid)
+    return _RUNTIME.get(mid)
+
+
 def model_state():
     st, data = router("/models")
     rmap = {m["id"]: m for m in data.get("data", [])} if st == 200 else {}
@@ -390,6 +417,9 @@ def model_state():
     for m in models:
         if m["id"] in parked:
             m["vision_off"] = True    # projector parked; the editor offers it back
+        rt = None if m.get("process") else _runtime(m["id"], m["status"])
+        if rt:
+            m["runtime"] = rt
     LOADPROG.attach(models)
     models.sort(key=lambda m: (m["status"] != "loaded", m["id"]))
     return {"models": models, "global": glob}

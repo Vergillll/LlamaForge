@@ -256,6 +256,25 @@
 :where(:root[data-skin="hearth"]) :where(input:not([type=checkbox]):not([type=radio]),select,textarea){border-radius:var(--r-sm);padding:8px 11px}
 :root[data-skin="hearth"] .fld input,:root[data-skin="hearth"] .fld select{border-radius:var(--r-sm);padding:8px 11px}
 
+/* quick access strips: one warm card, serif strip names, the knob grid below it */
+:root[data-skin="hearth"] .qstrips{border-radius:var(--r-lg);background:var(--surface);box-shadow:var(--lift)}
+:root[data-skin="hearth"] .qhead{background:transparent;padding:18px 14px 18px 20px}
+:root[data-skin="hearth"] .qtitle{font-family:var(--serif);font-weight:600;font-size:17px;letter-spacing:-.01em;text-transform:none;
+  color:var(--ink-strong);font-variation-settings:"opsz" 72}
+:root[data-skin="hearth"] .qhint{font-size:12px}
+:root[data-skin="hearth"] .qbody{padding:16px 20px 16px 8px;gap:14px}
+:root[data-skin="hearth"] .qlab{letter-spacing:.08em}
+:root[data-skin="hearth"] .qf input,:root[data-skin="hearth"] .qf select{border-radius:var(--r-sm);padding:8px 11px}
+:root[data-skin="hearth"] .qmore{border-radius:var(--r);background:var(--surface);box-shadow:var(--lift)}
+:root[data-skin="hearth"] .qmore>summary{font-family:var(--sans);font-weight:500;letter-spacing:0;text-transform:none;font-size:13px;
+  color:var(--ink-hi);background:transparent;padding:12px 16px}
+:root[data-skin="hearth"] .qmore>summary:hover{color:var(--amber-text)}
+:root[data-skin="hearth"] .qchanges{font-size:12.5px}
+@media (max-width:760px){
+  :root[data-skin="hearth"] .qhead{padding:12px 16px}
+  :root[data-skin="hearth"] .qbody{padding:14px 16px}
+}
+
 /* modals, wizard, toast */
 :root[data-skin="hearth"] .modal,
 :root[data-skin="hearth"] .wizard-card{border-radius:var(--r-lg);border:1px solid var(--hair-hi);background:var(--surface);
