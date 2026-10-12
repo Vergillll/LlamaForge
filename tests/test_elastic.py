@@ -338,9 +338,10 @@ class GrowTest(unittest.TestCase):
         self.assertEqual(el.status()["cooldown_s"], 120)
 
     def test_turning_it_off_grows_everything_back(self):
-        io, el, c, _ = self.shrunk()
+        io, el, c, clock = self.shrunk()
         c["elastic_vram"] = False
         io.others = 1 * GiB              # step 0 fits again
+        clock.t += 200                   # and the cooldown since the shrink has passed
         el.tick()
         self.assertEqual(swaps(io), [("swap", "big", 0)])
         self.assertIn("turned off", el.status()["events"][0]["reason"])
@@ -456,6 +457,7 @@ class OffPathTest(unittest.TestCase):
         el.tick(); el.tick()
         io.calls.clear()
         c["elastic_vram"] = False
+        clock.t += 200                   # the cooldown since the shrink has passed
         return io, el, c
 
     def test_off_waits_until_step_zero_fits(self):
@@ -580,11 +582,12 @@ class Round2Test(unittest.TestCase):
         self.assertNotIn("big", el._failed_at)
 
     def test_off_path_failure_walks_down_and_stays_loaded(self):
-        io = FakeIO(others=4); el, c, _ = controller(io)
+        io = FakeIO(others=4); el, c, clock = controller(io)
         el.tick(); el.tick()
         io.calls.clear()
         c["elastic_vram"] = False
         io.others = 1 * GiB; io.fail = {0}
+        clock.t += 200                                          # past the cooldown
         el.tick()
         self.assertEqual(swaps(io), [("swap", "big", 0), ("swap", "big", 1)])
         self.assertNotIn(("giveup", "big"), io.calls)
@@ -603,7 +606,7 @@ class Round2Test(unittest.TestCase):
         self.assertNotIn(("giveup", "big"), io.calls)
 
     def test_status_while_off_lists_the_waiting_models(self):
-        io = FakeIO(others=4); el, c, _ = controller(io)
+        io = FakeIO(others=4); el, c, clock = controller(io)
         el.tick(); el.tick()
         self.assertEqual(el.status()["waiting"], [])
         c["elastic_vram"] = False
@@ -613,8 +616,26 @@ class Round2Test(unittest.TestCase):
         self.assertEqual(st["models"][0]["at"], 1)
         self.assertEqual(st["others_mib"], {0: 4 * GiB})
         io.others = 1 * GiB
+        clock.t += 200
         el.tick()                                               # moves it back
         self.assertEqual(el.status()["waiting"], [])
+
+
+class OffPathBackoffTest(unittest.TestCase):
+    def test_a_failing_step_zero_is_retried_with_a_growing_cooldown(self):
+        io = FakeIO(others=4); el, c, clock = controller(io)
+        el.tick(); el.tick()
+        io.calls.clear()
+        c["elastic_vram"] = False
+        io.others = 1 * GiB; io.fail = {0}
+        clock.t += 200                                          # past the cooldown
+        for _ in range(6):
+            el.tick()
+            clock.t += 5
+        self.assertEqual(swaps(io), [("swap", "big", 0), ("swap", "big", 1)])
+        clock.t += 250                                          # past the doubled cooldown
+        el.tick()
+        self.assertEqual(swaps(io), [("swap", "big", 0), ("swap", "big", 1)] * 2)
 
 
 if __name__ == "__main__":

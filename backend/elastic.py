@@ -175,6 +175,8 @@ class Elastic:
                 waiting = [m["id"] for m in models if m["at"] > 0]
                 with self._lock:
                     self._models, self._others, self._waiting = models, others, waiting
+                if self._last_change is not None and self._clock() - self._last_change < self._cooldown:
+                    return               # backs off like a grow: a failed load doubles it
                 for m in models:         # turned off while shrunk: one model per tick, only
                     if m["at"] > 0 and choose(           # when its own step fits again
                             m["fps"], self._budget(snap, others, models, m, head), 0) == 0:
