@@ -143,7 +143,7 @@ class Elastic:
         self._lock = threading.Lock()    # what status() reads; never held across a swap
         self._enabled = self._standby = False
         self._swapping = None
-        self._models, self._others = [], {}
+        self._models, self._others, self._waiting = [], {}, []
         self._shrink_hits = self._grow_hits = 0
         self._last_change = self._last_grow = None
         self._cooldown = COOLDOWN_S
@@ -171,10 +171,17 @@ class Elastic:
                 head = int(c.get("elastic_headroom_mib", 1536))
                 models = [m for m in self._io.models(list(snap)) if m["steps"]]
                 others = self._others_of(snap, models)
+                self._forgive(models)
+                waiting = [m["id"] for m in models if m["at"] > 0]
+                with self._lock:
+                    self._models, self._others, self._waiting = models, others, waiting
                 for m in models:         # turned off while shrunk: one model per tick, only
                     if m["at"] > 0 and choose(           # when its own step fits again
                             m["fps"], self._budget(snap, others, models, m, head), 0) == 0:
-                        self._move(c, m, 0, "Elastic VRAM was turned off", stop=0)
+                        ev = self._move(c, m, 0, "Elastic VRAM was turned off")
+                        if ev["ok"] and ev["to"] == label(m["steps"][0]):
+                            with self._lock:
+                                self._waiting = [w for w in waiting if w != m["id"]]
                         break
                 return
             if standby:                  # Game mode unloads everything anyway
@@ -185,8 +192,9 @@ class Elastic:
                 return
             models = [m for m in self._io.models(list(snap)) if m["steps"]]
             others = self._others_of(snap, models)
+            self._forgive(models)
             with self._lock:
-                self._models, self._others = models, others
+                self._models, self._others, self._waiting = models, others, []
             now = self._clock()
             if self._last_change is not None and now - self._last_change >= CALM_RESET_S:
                 self._cooldown = COOLDOWN_S
@@ -208,7 +216,14 @@ class Elastic:
             if self._grow_hits >= GROW_HITS and (
                     self._last_change is None or now - self._last_change >= self._cooldown):
                 self._grow_hits = 0
-                self._move(c, pick[0], pick[1], "other apps freed VRAM", stop=pick[0]["at"])
+                self._move(c, pick[0], pick[1], "other apps freed VRAM")
+
+    def _forgive(self, models):
+        """A model that is loaded at its own settings again (the user reloaded
+        it after a give-up) may be shrunk again at once."""
+        for m in models:
+            if m["at"] == 0:
+                self._failed_at.pop(m["id"], None)
 
     def safe_tick(self):
         try:
@@ -275,13 +290,12 @@ class Elastic:
         return None
 
     # -- the swap ---------------------------------------------------------
-    def _move(self, c, m, j, reason, stop=None):
-        """Save the conversation, move m to step j (walking down to step `stop`,
-        the last by default, when a load fails), restore. Gives up - user keys
-        back, model unloaded - when even `stop` will not load. Every io call may
+    def _move(self, c, m, j, reason):
+        """Save the conversation, move m to step j (walking down the rest of the
+        ladder when a load fails), restore. Gives up - user keys back, model
+        unloaded - only when every step fails. Every io call may
         raise; that becomes a note, never an escape."""
         mid, frm, steps = m["id"], m["at"], m["steps"]
-        stop = len(steps) - 1 if stop is None else stop
         with self._lock:
             self._swapping = mid
         t0, notes, at, handle, kept = self._clock(), [], None, None, None
@@ -294,7 +308,7 @@ class Elastic:
                 except Exception as e:
                     handle = None
                     notes.append(f"conversation not kept: {type(e).__name__}: {e}")
-            for i in range(j, stop + 1):
+            for i in range(j, len(steps)):
                 try:
                     err = self._io.swap(mid, steps[i])
                 except Exception as e:
@@ -327,7 +341,7 @@ class Elastic:
                 self._swapping = None
             now = self._clock()
             self._last_change = now
-        if at is None or at == frm:
+        if at is None:
             self._failed_at[mid] = now
         if at is not None and at < frm:
             self._last_grow = now
@@ -365,7 +379,7 @@ class Elastic:
                 here = label(m["steps"][m["at"]])
                 self._log(mid, here, here, "you asked", 0, False, None, note)
                 return {"ok": False, "error": note}
-            ev = self._move(c, m, j, "you asked", stop=m["at"])
+            ev = self._move(c, m, j, "you asked")
             return {"ok": ev["ok"], "to": ev["to"]}
 
     def safe_grow(self, mid):
@@ -378,7 +392,7 @@ class Elastic:
         with self._lock:
             return {
                 "enabled": self._enabled, "standby": self._standby, "swapping": self._swapping,
-                "cooldown_s": self._cooldown, "others_mib": dict(self._others),
+                "cooldown_s": self._cooldown, "waiting": list(self._waiting), "others_mib": dict(self._others),
                 "models": [{"id": m["id"], "at": m["at"], "label": label(m["steps"][m["at"]]),
                             "gpu_layers": m["steps"][m["at"]]["gpu_layers"],
                             "layers": m["steps"][m["at"]]["layers"]} for m in self._models],

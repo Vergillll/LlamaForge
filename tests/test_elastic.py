@@ -407,6 +407,7 @@ class ExceptionSafetyTest(unittest.TestCase):
         io = QuietGiveupIO(others=4); io.fail = {1, 2, 3}
         el, _, clock = controller(io)
         el.tick(); el.tick()
+        io.at["big"] = 1; io.others = 8 * GiB                   # still listed, not at its own step
         n = len(io.calls)
         for _ in range(4):
             el.tick()
@@ -465,14 +466,13 @@ class OffPathTest(unittest.TestCase):
         el.tick()
         self.assertEqual(swaps(io), [("swap", "big", 0)])
 
-    def test_off_never_walks_down_it_gives_up(self):
+    def test_off_gives_up_only_when_every_step_fails(self):
         io, el, _ = self.shrunk_off()
-        io.others = 1 * GiB; io.fail = {0}
+        io.others = 1 * GiB; io.fail = {0, 1, 2, 3}
         el.tick()
-        self.assertEqual(swaps(io), [("swap", "big", 0)])
         self.assertEqual(io.calls.count(("giveup", "big")), 1)
         el.tick(); el.tick()
-        self.assertEqual(swaps(io), [("swap", "big", 0)])
+        self.assertEqual(len(swaps(io)), 4)                     # the model is gone: no retries
 
 
 class BaselineBusyTest(unittest.TestCase):
@@ -520,7 +520,7 @@ class FailedGrowTest(unittest.TestCase):
     def test_an_unloaded_grow_also_doubles_it(self):
         io = QuietGiveupIO(others=4); el, _, clock = controller(io)
         el.tick(); el.tick()
-        io.others = 1 * GiB; io.fail = {0, 1}
+        io.others = 1 * GiB; io.fail = {0, 1, 2, 3}
         clock.t += 200
         for _ in range(6):
             el.tick()
@@ -554,6 +554,67 @@ class FootprintGuardsTest(unittest.TestCase):
         self.assertEqual(fps, [{0: 0, 1: 0}, {0: 3000, 1: 3000}, {0: 0, 1: 0}])
         fps = elastic.footprints([{0: 8000}, None, None], [12000, None], [0])
         self.assertEqual(fps, [{0: 8000}, {0: 0}, {0: 0}])
+
+
+class Round2Test(unittest.TestCase):
+    def test_a_grow_that_lands_back_does_not_block_the_next_shrink(self):
+        io = FakeIO(others=4); el, _, clock = controller(io)
+        el.tick(); el.tick()                                    # shrunk to step 1
+        io.others = 1 * GiB; io.fail = {0}
+        clock.t += 200
+        for _ in range(6):
+            el.tick()
+        self.assertEqual(io.at["big"], 1)                       # the grow fell back to step 1
+        io.calls.clear()
+        io.others = 7 * GiB                                     # real pressure
+        el.tick(); el.tick()
+        self.assertEqual(swaps(io), [("swap", "big", 2)])
+
+    def test_a_model_back_at_step_zero_clears_its_failure(self):
+        io = QuietGiveupIO(others=4); io.fail = {1, 2, 3}
+        el, _, clock = controller(io)
+        el.tick(); el.tick()
+        self.assertIn("big", el._failed_at)
+        io.fail = set(); io.at["big"] = 0                       # the user loaded it again
+        el.tick()
+        self.assertNotIn("big", el._failed_at)
+
+    def test_off_path_failure_walks_down_and_stays_loaded(self):
+        io = FakeIO(others=4); el, c, _ = controller(io)
+        el.tick(); el.tick()
+        io.calls.clear()
+        c["elastic_vram"] = False
+        io.others = 1 * GiB; io.fail = {0}
+        el.tick()
+        self.assertEqual(swaps(io), [("swap", "big", 0), ("swap", "big", 1)])
+        self.assertNotIn(("giveup", "big"), io.calls)
+        ev = el.status()["events"][0]
+        self.assertTrue(ev["ok"])
+        self.assertIn("didn't load", ev["note"])
+
+    def test_grow_now_never_unloads(self):
+        io = FakeIO(others=4); el, _, _ = controller(io)
+        el.tick(); el.tick()
+        io.calls.clear()
+        io.others = 1 * GiB; io.fail = {0, 1}
+        out = el.grow_now("big")
+        self.assertTrue(out["ok"])
+        self.assertEqual(io.at["big"], 2)
+        self.assertNotIn(("giveup", "big"), io.calls)
+
+    def test_status_while_off_lists_the_waiting_models(self):
+        io = FakeIO(others=4); el, c, _ = controller(io)
+        el.tick(); el.tick()
+        self.assertEqual(el.status()["waiting"], [])
+        c["elastic_vram"] = False
+        el.tick()                                               # step 0 does not fit yet
+        st = el.status()
+        self.assertEqual(st["waiting"], ["big"])
+        self.assertEqual(st["models"][0]["at"], 1)
+        self.assertEqual(st["others_mib"], {0: 4 * GiB})
+        io.others = 1 * GiB
+        el.tick()                                               # moves it back
+        self.assertEqual(el.status()["waiting"], [])
 
 
 if __name__ == "__main__":
