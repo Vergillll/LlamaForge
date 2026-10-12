@@ -130,5 +130,253 @@ class PlanKeysTest(unittest.TestCase):
         self.assertIsNone(rec3)
 
 
+GiB = 1024
+LADDER = elastic.ladder({}, lay(64))[:3] + elastic.ladder({}, lay(64))[-1:]   # 64, 48, 32, 0
+
+
+class FakeIO:
+    def __init__(self, total=16, others=2):
+        self.total, self.others = total * GiB, others * GiB
+        self.fps = {"big": [{0: 12 * GiB}, {0: 9 * GiB}, {0: 6 * GiB}, {0: 1 * GiB}]}
+        self.at = {"big": 0}
+        self.game = False
+        self.fail = set()               # step indexes whose load fails
+        self.files = [(0, "lf-x-0.bin")]
+        self.calls = []
+
+    def snapshot(self):
+        ours = sum(self.fps[m][a][0] for m, a in self.at.items())
+        return {0: {"used": self.others + ours, "total": self.total}}
+
+    def models(self, gpus):
+        return [{"id": m, "steps": LADDER, "fps": self.fps[m], "at": a} for m, a in self.at.items()]
+
+    def game_active(self):
+        return self.game
+
+    def tidy(self):
+        pass
+
+    def save(self, mid):
+        self.calls.append(("save", mid))
+        return {"files": list(self.files), "note": ""}
+
+    def swap(self, mid, step):
+        i = LADDER.index(step)
+        self.calls.append(("swap", mid, i))
+        if i in self.fail:
+            return "out of memory"
+        self.at[mid] = i
+        return ""
+
+    def restore(self, mid, handle):
+        self.calls.append(("restore", mid))
+        return len(handle["files"])
+
+    def drop(self, handle):
+        self.calls.append(("drop",))
+
+    def giveup(self, mid):
+        self.calls.append(("giveup", mid))
+        del self.at[mid]
+
+
+class Clock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
+def controller(io, **cfg):
+    c = {"elastic_vram": True, "elastic_grow": True, "elastic_keep_conversation": True,
+         "elastic_headroom_mib": 1536}
+    c.update(cfg)
+    clock = Clock()
+    return elastic.Elastic(lambda: c, io, clock=clock), c, clock
+
+
+def swaps(io):
+    return [c for c in io.calls if c[0] == "swap"]
+
+
+class ShrinkTest(unittest.TestCase):
+    def test_two_ticks_under_half_the_headroom_then_one_step_that_fits(self):
+        io = FakeIO(); el, _, _ = controller(io)
+        el.tick()
+        self.assertEqual(io.calls, [])                          # 2 GiB free: fine
+        io.others = 4 * GiB                                     # 0 free now
+        el.tick()
+        self.assertEqual(io.calls, [])                          # one sighting is not enough
+        el.tick()
+        self.assertEqual(io.calls, [("save", "big"), ("swap", "big", 1), ("restore", "big")])
+        ev = el.status()["events"][0]
+        self.assertEqual((ev["model"], ev["from"], ev["to"], ev["ok"], ev["kept"]),
+                         ("big", "64/64", "48/64", True, True))
+
+    def test_keeping_conversations_off_skips_save_and_restore(self):
+        io = FakeIO(others=4); el, _, _ = controller(io, elastic_keep_conversation=False)
+        el.tick(); el.tick()
+        self.assertEqual(io.calls, [("swap", "big", 1)])
+        self.assertIsNone(el.status()["events"][0]["kept"])
+
+    def test_a_failed_load_walks_down_the_ladder(self):
+        io = FakeIO(others=4); io.fail = {1}
+        el, _, _ = controller(io)
+        el.tick(); el.tick()
+        self.assertEqual(swaps(io), [("swap", "big", 1), ("swap", "big", 2)])
+        ev = el.status()["events"][0]
+        self.assertEqual(ev["to"], "32/64")
+        self.assertIn("48/64 didn't load: out of memory", ev["note"])
+
+    def test_failing_all_the_way_down_gives_up(self):
+        io = FakeIO(others=4); io.fail = {1, 2, 3}
+        el, _, _ = controller(io)
+        el.tick(); el.tick()
+        self.assertEqual(io.calls[-2:], [("giveup", "big"), ("drop",)])
+        ev = el.status()["events"][0]
+        self.assertEqual((ev["ok"], ev["to"]), (False, "unloaded"))
+        self.assertIn("couldn't fit big", ev["note"])
+
+    def test_one_model_per_tick_the_one_that_frees_most(self):
+        io = FakeIO(total=24, others=2)
+        io.fps["small"] = [{0: 3 * GiB}, {0: 2304}, {0: 1536}, {0: 512}]
+        io.at["small"] = 0
+        el, _, _ = controller(io)
+        io.others = 9 * GiB
+        el.tick(); el.tick()
+        self.assertEqual(swaps(io), [("swap", "big", 1)])
+
+    def test_stands_down_while_game_mode_is_active(self):
+        io = FakeIO(others=4); io.game = True
+        el, _, _ = controller(io)
+        el.tick(); el.tick(); el.tick()
+        self.assertEqual(io.calls, [])
+        self.assertTrue(el.status()["standby"])
+
+    def test_off_does_nothing(self):
+        io = FakeIO(others=4)
+        el, _, _ = controller(io, elastic_vram=False)
+        el.tick(); el.tick()
+        self.assertEqual(io.calls, [])
+        self.assertFalse(el.status()["enabled"])
+
+    def test_errors_in_one_tick_do_not_kill_the_loop(self):
+        io = FakeIO()
+
+        def boom(gpus):
+            raise OSError("router down")
+        io.models = boom
+        el, _, _ = controller(io)
+        el.safe_tick()                                          # no exception escapes
+
+
+class GrowTest(unittest.TestCase):
+    def shrunk(self, **cfg):
+        io = FakeIO(others=4); el, c, clock = controller(io, **cfg)
+        el.tick(); el.tick()                                    # shrink to 48/64
+        io.calls.clear()
+        return io, el, c, clock
+
+    def test_six_quiet_ticks_and_the_cooldown_then_straight_to_the_top(self):
+        io, el, _, clock = self.shrunk()
+        io.others = 1 * GiB
+        for _ in range(6):
+            clock.t += 5
+            el.tick()
+        self.assertEqual(swaps(io), [])                         # 30 s: still inside the 120 s cooldown
+        clock.t += 100
+        el.tick()
+        self.assertEqual(swaps(io), [("swap", "big", 0)])
+        self.assertEqual(el.status()["events"][0]["to"], "64/64")
+
+    def test_needs_an_extra_gib_of_margin(self):
+        io, el, _, clock = self.shrunk()
+        io.others = 2 * GiB + 512        # step 0 fits the headroom, but not headroom + 1 GiB
+        clock.t += 500
+        for _ in range(7):
+            el.tick()
+        self.assertEqual(swaps(io), [])
+
+    def test_grow_off(self):
+        io, el, _, clock = self.shrunk(elastic_grow=False)
+        io.others = 0
+        clock.t += 500
+        for _ in range(7):
+            el.tick()
+        self.assertEqual(swaps(io), [])
+
+    def test_not_while_the_other_app_still_holds_most_of_it(self):
+        io = FakeIO(total=20, others=8); el, _, clock = controller(io, elastic_headroom_mib=512)
+        el.tick(); el.tick()                                    # shrink with others at 8 GiB
+        io.calls.clear()
+        io.others = 6 * GiB + 512        # 81 %: it's still there (step 0 would fit with the margin)
+        clock.t += 500
+        for _ in range(7):
+            el.tick()
+        self.assertEqual(swaps(io), [])
+
+    def test_a_shrink_soon_after_a_grow_doubles_the_cooldown(self):
+        io, el, _, clock = self.shrunk()
+        io.others = 1 * GiB
+        clock.t += 200
+        for _ in range(6):
+            el.tick()
+        self.assertEqual(swaps(io), [("swap", "big", 0)])
+        io.others = 4 * GiB
+        clock.t += 60
+        el.tick(); el.tick()
+        self.assertEqual(swaps(io)[-1], ("swap", "big", 1))
+        self.assertEqual(el.status()["cooldown_s"], 240)
+
+    def test_an_hour_of_calm_resets_the_cooldown(self):
+        io, el, _, clock = self.shrunk()
+        el._cooldown = 1800
+        clock.t += 3600
+        el.tick()
+        self.assertEqual(el.status()["cooldown_s"], 120)
+
+    def test_turning_it_off_grows_everything_back(self):
+        io, el, c, _ = self.shrunk()
+        c["elastic_vram"] = False
+        el.tick()
+        self.assertEqual(swaps(io), [("swap", "big", 0)])
+        self.assertIn("turned off", el.status()["events"][0]["reason"])
+
+    def test_grow_now_skips_the_wait_but_not_the_fit(self):
+        io, el, _, _ = self.shrunk()
+        out = el.grow_now("big")                                # others still at 4 GiB
+        self.assertFalse(out["ok"])
+        self.assertEqual(swaps(io), [])
+        self.assertIn("still use", el.status()["events"][0]["note"])
+        io.others = 1 * GiB
+        self.assertEqual(el.grow_now("big"), {"ok": True, "to": "64/64"})
+        self.assertEqual(swaps(io), [("swap", "big", 0)])
+
+    def test_grow_now_on_a_model_that_is_not_shrunk(self):
+        io = FakeIO(); el, _, _ = controller(io)
+        self.assertFalse(el.grow_now("big")["ok"])
+
+
+class StatusTest(unittest.TestCase):
+    def test_status_lists_models_and_others(self):
+        io = FakeIO(others=4); el, _, _ = controller(io)
+        el.tick(); el.tick(); el.tick()
+        st = el.status()
+        m = st["models"][0]
+        self.assertEqual((m["id"], m["at"], m["gpu_layers"], m["layers"], m["label"]),
+                         ("big", 1, 48, 64, "48/64"))
+        self.assertEqual(st["others_mib"], {0: 4 * GiB})
+        self.assertIsNone(st["swapping"])
+        self.assertEqual(len(st["events"]), 1)
+
+    def test_the_log_keeps_the_last_twenty(self):
+        io = FakeIO(); el, _, _ = controller(io)
+        for i in range(25):
+            el._log("big", "64/64", "48/64", "test", 0, True, None, "")
+        self.assertEqual(len(el.status()["events"]), 20)
+
+
 if __name__ == "__main__":
     unittest.main()

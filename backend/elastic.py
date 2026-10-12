@@ -9,6 +9,15 @@ import collections
 import threading
 import time
 
+SHRINK_HITS = 2            # ticks under half the headroom before a shrink
+GROW_HITS = 6              # ticks (30 s) with room to spare before a grow
+GROW_MARGIN_MIB = 1024     # a grow must fit with this much on top of the headroom
+COOLDOWN_S = 120           # since the last change, before a grow
+COOLDOWN_MAX_S = 1800
+THRASH_WINDOW_S = 300      # a shrink this soon after a grow doubles the cooldown
+CALM_RESET_S = 3600        # an hour without changes resets it
+STILL_BUSY = 0.8           # no grow while others hold >= 80 % of what they had at the shrink
+
 
 def _int(v):
     try:
@@ -107,3 +116,233 @@ def plan_keys(section, rec, keys):
         del ours[k]
     writes = {k: v for k, v in writes.items() if section.get(k) != v}
     return writes, ({"keys": ours, "was": was} if ours else None)
+
+
+def _sum(fps):
+    out = {}
+    for fp in fps:
+        for g, v in fp.items():
+            out[g] = out.get(g, 0) + v
+    return out
+
+
+class Elastic:
+    def __init__(self, cfg, io, clock=time.time):
+        self._cfg, self._io, self._clock = cfg, io, clock
+        self._run = threading.Lock()     # one tick or swap at a time; a swap can take 20 s
+        self._lock = threading.Lock()    # what status() reads; never held across a swap
+        self._enabled = self._standby = False
+        self._swapping = None
+        self._models, self._others = [], {}
+        self._shrink_hits = self._grow_hits = 0
+        self._last_change = self._last_grow = None
+        self._cooldown = COOLDOWN_S
+        self._order = []                 # shrunk models, oldest first: grow back newest first
+        self._others_at = {}             # mid -> MiB other apps used when it shrank
+        self._events = collections.deque(maxlen=20)
+        self._thread = None
+
+    # -- one look ---------------------------------------------------------
+    def tick(self):
+        with self._run:
+            c = self._cfg()
+            enabled = bool(c.get("elastic_vram"))
+            standby = enabled and bool(self._io.game_active())
+            with self._lock:
+                self._enabled, self._standby = enabled, standby
+            self._io.tidy()
+            if not enabled:
+                self._shrink_hits = self._grow_hits = 0
+                back = [m for m in self._io.models([]) if m["steps"] and m["at"] > 0]
+                if back:                 # turned off while shrunk: one model per tick
+                    self._move(c, back[0], 0, "Elastic VRAM was turned off")
+                return
+            if standby:                  # Game mode unloads everything anyway
+                self._shrink_hits = self._grow_hits = 0
+                return
+            snap = self._io.snapshot()
+            if not snap:
+                return
+            models = [m for m in self._io.models(list(snap)) if m["steps"]]
+            others = self._others_of(snap, models)
+            with self._lock:
+                self._models, self._others = models, others
+            now = self._clock()
+            if self._last_change is not None and now - self._last_change >= CALM_RESET_S:
+                self._cooldown = COOLDOWN_S
+            head = int(c.get("elastic_headroom_mib", 1536))
+            if any(s["total"] - s["used"] < head / 2 for s in snap.values()):
+                self._grow_hits = 0
+                self._shrink_hits += 1
+                if self._shrink_hits >= SHRINK_HITS:
+                    self._shrink_hits = 0
+                    self._shrink(c, snap, others, models, head)
+                return
+            self._shrink_hits = 0
+            pick = self._grow_pick(snap, others, models, head) if c.get("elastic_grow", True) else None
+            if pick is None:
+                self._grow_hits = 0
+                return
+            self._grow_hits += 1
+            if self._grow_hits >= GROW_HITS and (
+                    self._last_change is None or now - self._last_change >= self._cooldown):
+                self._grow_hits = 0
+                self._move(c, pick[0], pick[1], "other apps freed VRAM")
+
+    def safe_tick(self):
+        try:
+            self.tick()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _others_of(snap, models):
+        ours = _sum(m["fps"][m["at"]] for m in models)
+        return {g: max(0, s["used"] - ours.get(g, 0)) for g, s in snap.items()}
+
+    @staticmethod
+    def _budget(snap, others, models, m, head):
+        """What m may use on each GPU: the total, less other apps, the
+        headroom and the other models where they are now."""
+        rest = _sum(o["fps"][o["at"]] for o in models if o["id"] != m["id"])
+        return {g: s["total"] - others.get(g, 0) - head - rest.get(g, 0) for g, s in snap.items()}
+
+    def _shrink(self, c, snap, others, models, head):
+        best = None
+        for m in models:
+            last = len(m["steps"]) - 1
+            if m["at"] >= last:
+                continue
+            j = choose(m["fps"], self._budget(snap, others, models, m, head), m["at"] + 1)
+            j = last if j is None else j
+            freed = sum(m["fps"][m["at"]].values()) - sum(m["fps"][j].values())
+            if best is None or freed > best[2]:
+                best = (m, j, freed)
+        if best is None:
+            return
+        m, j, _ = best
+        if self._last_grow is not None and self._clock() - self._last_grow < THRASH_WINDOW_S:
+            self._cooldown = min(self._cooldown * 2, COOLDOWN_MAX_S)
+        total = sum(others.values())
+        self._others_at[m["id"]] = total
+        if m["id"] not in self._order:
+            self._order.append(m["id"])
+        self._move(c, m, j, f"other apps use {total / 1024:.1f} GB")
+
+    def _grow_pick(self, snap, others, models, head):
+        by_id = {m["id"]: m for m in models}
+        total = sum(others.values())
+        for mid in reversed(self._order):
+            m = by_id.get(mid)
+            if not m or m["at"] == 0:
+                continue
+            if total >= STILL_BUSY * self._others_at.get(mid, float("inf")):
+                continue
+            b = self._budget(snap, others, models, m, head + GROW_MARGIN_MIB)
+            j = choose(m["fps"], b, 0)
+            if j is not None and j < m["at"]:
+                return m, j
+        for m in models:                 # shrunk before a panel restart: no history
+            if m["at"] > 0 and m["id"] not in self._order:
+                j = choose(m["fps"], self._budget(snap, others, models, m, head + GROW_MARGIN_MIB), 0)
+                if j is not None and j < m["at"]:
+                    return m, j
+        return None
+
+    # -- the swap ---------------------------------------------------------
+    def _move(self, c, m, j, reason):
+        """Save the conversation, move m to step j (walking further down when a
+        load fails), restore. Gives up - user keys back, model unloaded -
+        when even the last step won't load."""
+        mid, frm, steps = m["id"], m["at"], m["steps"]
+        with self._lock:
+            self._swapping = mid
+        t0, notes, at, handle = self._clock(), [], None, None
+        try:
+            if c.get("elastic_keep_conversation", True):
+                handle = self._io.save(mid)
+                if handle and handle.get("note"):
+                    notes.append(handle["note"])
+            for i in range(j, len(steps)):
+                err = self._io.swap(mid, steps[i])
+                if not err:
+                    at = i
+                    break
+                notes.append(f"{label(steps[i])} didn't load: {err}")
+            kept = None
+            if at is None:
+                self._io.giveup(mid)
+                notes.append(f"Elastic VRAM couldn't fit {mid}; it stays unloaded until you load it")
+                if handle:
+                    self._io.drop(handle)
+            elif handle and handle.get("files"):
+                kept = bool(self._io.restore(mid, handle))
+        finally:
+            with self._lock:
+                self._swapping = None
+        now = self._clock()
+        self._last_change = now
+        if at is not None and at < frm:
+            self._last_grow = now
+        if at in (0, None):
+            if mid in self._order:
+                self._order.remove(mid)
+            self._others_at.pop(mid, None)
+        return self._log(mid, label(steps[frm]), "unloaded" if at is None else label(steps[at]),
+                         reason, now - t0, at is not None, kept, "; ".join(notes))
+
+    def _log(self, mid, frm, to, reason, secs, ok, kept, note):
+        ev = {"t": self._clock(), "model": mid, "from": frm, "to": to, "reason": reason,
+              "secs": round(secs, 1), "ok": ok, "kept": kept, "note": note}
+        with self._lock:
+            self._events.appendleft(ev)
+        return ev
+
+    def grow_now(self, mid):
+        """The dashboard's "Grow back now": skip the wait and the cooldown, not
+        the fit (no extra margin either)."""
+        with self._run:
+            c = self._cfg()
+            snap = self._io.snapshot() or {}
+            models = [m for m in self._io.models(list(snap)) if m["steps"]]
+            m = next((x for x in models if x["id"] == mid), None)
+            if not m or m["at"] == 0:
+                return {"ok": False, "error": f"{mid} isn't resized"}
+            others = self._others_of(snap, models)
+            head = int(c.get("elastic_headroom_mib", 1536))
+            j = choose(m["fps"], self._budget(snap, others, models, m, head), 0)
+            if j is None or j >= m["at"]:
+                note = "other apps still use the VRAM it needs"
+                here = label(m["steps"][m["at"]])
+                self._log(mid, here, here, "you asked", 0, False, None, note)
+                return {"ok": False, "error": note}
+            ev = self._move(c, m, j, "you asked")
+            return {"ok": ev["ok"], "to": ev["to"]}
+
+    def safe_grow(self, mid):
+        try:
+            self.grow_now(mid)
+        except Exception:
+            pass
+
+    def status(self):
+        with self._lock:
+            return {
+                "enabled": self._enabled, "standby": self._standby, "swapping": self._swapping,
+                "cooldown_s": self._cooldown, "others_mib": dict(self._others),
+                "models": [{"id": m["id"], "at": m["at"], "label": label(m["steps"][m["at"]]),
+                            "gpu_layers": m["steps"][m["at"]]["gpu_layers"],
+                            "layers": m["steps"][m["at"]]["layers"]} for m in self._models],
+                "events": list(self._events)}
+
+    # -- background loop --------------------------------------------------
+    def start(self, interval=5.0):
+        if self._thread:
+            return
+
+        def loop():
+            while True:
+                self.safe_tick()
+                time.sleep(interval)
+        self._thread = threading.Thread(target=loop, daemon=True, name="elastic-vram")
+        self._thread.start()
