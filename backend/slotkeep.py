@@ -11,7 +11,9 @@ import urllib.parse
 
 PREFIX = "lf-"
 RESTART_HINT = ("conversation not kept: the router was started without a slot save "
-                "path - conversations survive a resize once it restarts from LlamaForge")
+                "folder (it gets one only while Elastic VRAM is on) - restart the router "
+                "once from LlamaForge (Setup > Network Access > Apply & Restart Router) "
+                "to keep conversations")
 
 
 def filename(mid, sid):

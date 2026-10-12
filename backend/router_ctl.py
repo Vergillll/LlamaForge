@@ -159,11 +159,14 @@ def stop(port, timeout=10):
     time.sleep(0.5)
     return _pid_on_port(port) is None
 
-def start(server_bin, models_ini, port, host, api_key, logdir, local_key="", pool=None):
+def start(server_bin, models_ini, port, host, api_key, logdir, local_key="", pool=None,
+          slot_save=False):
     """api_key is the user's key and decides policy (LAN needs one the user
     knows); local_key is LlamaForge's own, used when the user has none.
     pool: None for one model at a time, or slots.router_pool()'s
-    {"models_max", "autoload"} for multi-model mode."""
+    {"models_max", "autoload"} for multi-model mode. slot_save: give the
+    router a slot save folder (Elastic VRAM keeping conversations); off, no
+    API-key holder can write slot dumps to disk."""
     reason = network_policy.start_error(host, api_key)
     if reason:
         return False, reason
@@ -183,7 +186,7 @@ def start(server_bin, models_ini, port, host, api_key, logdir, local_key="", poo
             "--host", host, "--port", str(port), "--metrics"]
     if pool and not pool.get("autoload", True):
         args.append("--no-models-autoload")
-    if supports_slot_save(server_bin):
+    if slot_save and supports_slot_save(server_bin):
         try:                      # never let this block the router starting
             os.makedirs(slot_save_dir(logdir), exist_ok=True)
             args += ["--slot-save-path", slot_save_dir(logdir)]
@@ -229,7 +232,8 @@ def running_pool(logdir):
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None
 
-def restart(server_bin, models_ini, port, host, api_key, logdir, local_key="", pool=None):
+def restart(server_bin, models_ini, port, host, api_key, logdir, local_key="", pool=None,
+            slot_save=False):
     reason = network_policy.start_error(host, api_key)
     if reason:
         return False, reason
@@ -239,4 +243,5 @@ def restart(server_bin, models_ini, port, host, api_key, logdir, local_key="", p
         return False, ("can't see which process holds the router port - install "
                        "lsof, or iproute2 (ss), or psmisc (fuser)")
     stop(port)
-    return start(server_bin, models_ini, port, host, api_key, logdir, local_key, pool)
+    return start(server_bin, models_ini, port, host, api_key, logdir, local_key, pool,
+                 slot_save=slot_save)

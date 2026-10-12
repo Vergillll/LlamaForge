@@ -54,7 +54,8 @@ class SaveTest(unittest.TestCase):
         r = FakeRouter([{"id": 0, "n_prompt_tokens": 5000}]); r.save_code = 501
         files, why = slotkeep.save(r, "m", "D:/x", disk_free=lambda p: 10 * 2**30)
         self.assertEqual(files, [])
-        self.assertIn("restarts from LlamaForge", why)
+        self.assertIn("restart the router", why)                # one restart turns it on
+        self.assertIn("Apply & Restart Router", why)
 
 
     def test_a_200_that_saved_nothing_says_so(self):

@@ -68,7 +68,7 @@ When another app (a game, Blender, ComfyUI, a video editor) needs your GPU, Elas
 - **Turning it off isn't instant.** Each resized model goes back to full size once it fits again, after the same wait. The **now** line lists the models still waiting.
 - **Grow back automatically** is on by default. Untick it and a resized model stays small until you click its dashboard chip.
 - **Game mode comes first.** While Game mode is on and a game is running, Elastic VRAM stands by.
-- **Keeping the conversation** needs a router that supports `--slot-save-path`. LlamaForge adds it when it starts the router and the binary has the flag; the files go in a `slot-saves` folder beside `logs`, are deleted right after each resize, and any left by a crash are removed at startup. On a router started some other way the model is still resized, but the conversation isn't kept.
+- **Turning it on takes effect at once**, but **keeping the conversation** needs one router restart afterwards (Network Access: **Apply & Restart Router**, keeping the key as it is). LlamaForge gives the router a save folder (`--slot-save-path`) only when it starts it while Elastic VRAM and keeping conversations are both on, and the binary has the flag; toggling them never restarts the router by itself, since that would unload the model it's protecting. The files go in a `slot-saves` folder beside `logs`, are deleted right after each resize, and any left by a crash are removed at startup. Until the restart, or on a router started some other way (the run script), the model is still resized, but the conversation isn't kept, and the log says so.
 - **Where it works:** NVIDIA GPUs only, since it reads free memory from `nvidia-smi`. On a Mac, or without an NVIDIA GPU, the card says so and the setting does nothing. Only llama.cpp router models are resized: not models pinned to a build of their own, ik_llama or vLLM.
 
 The card shows the current state on its **now** line and a log of the last 20 resizes: when, which model, from and to which size, why, how long it took and whether the conversation was kept.
@@ -79,6 +79,8 @@ The Network Access card controls the llama.cpp router, never the dashboard: the
 panel and management API stay on `127.0.0.1`. Choose **This computer only** for
 the router's `127.0.0.1` scope or **Devices on my local network** for its
 `0.0.0.0` scope. LAN selection requires a usable key before Apply is enabled.
+While [Elastic VRAM](#elastic-vram) keeps conversations, the router has a slot save
+folder, so anyone holding the router API key can also use its slot save and restore.
 
 Choose one unambiguous key action: **Keep the configured key**, **Generate a new strong key**,
 **Replace with a key I provide**, or **Remove the key (local-only)**. Remove is available only with local access; moving

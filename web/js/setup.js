@@ -588,7 +588,7 @@ function elasticMarkup() {
       <div id="el-log">${elastic.eventsMarkup(e)}</div>
       <div class="actions"><button id="el-save">Save</button><span class="msg" id="el-msg"></span></div>
       <div class="note">It checks every 5 seconds. A model shrinks after two checks with less than half the free VRAM above, and grows back after 30 seconds with room to spare (at least 2 minutes after the last change, longer if an app keeps taking the memory back). A resized model runs much slower: a 27B went from 23 to 4 tokens/s at 40 of 64 layers. A resize reloads the model, from a few seconds for a small one to about 20 for a 27B; requests in that window wait or fail.</div>
-      <div class="note">Turning it off doesn't restore models at once: each one goes back to full size when it fits again, after the same cooldown. Not resized: models on a build of their own, ik_llama and vLLM. Context size, quant and cache type never change. Conversations are kept only on a router LlamaForge started (it adds <b>--slot-save-path</b>); the snapshot files are deleted right after each resize.</div>
+      <div class="note">Turning it off doesn't restore models at once: each one goes back to full size when it fits again, after the same cooldown. Not resized: models on a build of their own, ik_llama and vLLM. Context size, quant and cache type never change. Resizing starts at once; keeping conversations needs one router restart after turning it on (Network Access: <b>Apply &amp; Restart Router</b>), since LlamaForge gives the router a save folder (<b>--slot-save-path</b>) only while Elastic is on. The snapshot files are deleted right after each resize.</div>
     </div>`;
 }
 

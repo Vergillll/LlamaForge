@@ -2083,7 +2083,8 @@ def _sync_router_pool(c):
     ok, err = router_ctl.restart(sbin, config.ini_path(), c["router_port"],
                                  c.get("router_host", "127.0.0.1"),
                                  c.get("router_api_key", ""), LOGDIR,
-                                 c.get("router_local_key", ""), want)
+                                 c.get("router_local_key", ""), want,
+                                 slot_save=_el_slot_save(c))
     return bool(ok), err
 
 
@@ -2122,7 +2123,8 @@ def reconcile_router_auth():
         ok, err = router_ctl.restart(sbin, config.ini_path(), c["router_port"],
                                      c.get("router_host", "127.0.0.1"),
                                      c.get("router_api_key", ""), LOGDIR,
-                                     c.get("router_local_key", ""), _router_pool(c, sbin))
+                                     c.get("router_local_key", ""), _router_pool(c, sbin),
+                                     slot_save=_el_slot_save(c))
     print("  router restarted with API-key auth" if ok
           else f"  WARNING: router auth restart failed ({err})")
     return True
@@ -2176,7 +2178,8 @@ def _post_network_locked(req):
         ok, error = router_ctl.restart(
             sbin, config.ini_path(), c["router_port"],
             mutation.router_host, mutation.router_api_key, LOGDIR,
-            c.get("router_local_key", ""), _router_pool(c, sbin))
+            c.get("router_local_key", ""), _router_pool(c, sbin),
+            slot_save=_el_slot_save(c))
     except Exception as exc:
         ok, error = False, exc
     running = router_ctl.is_running(c["router_port"])
@@ -2226,7 +2229,8 @@ def _post_engine_switch_locked(req):
     ok, err = router_ctl.restart(sbin, config.ini_path(), c["router_port"],
                                  c.get("router_host", "127.0.0.1"),
                                  c.get("router_api_key", ""), LOGDIR,
-                                 c.get("router_local_key", ""), _router_pool(c, sbin))
+                                 c.get("router_local_key", ""), _router_pool(c, sbin),
+                                 slot_save=_el_slot_save(c))
     return 200, {"ok": ok, "active_engine": engine, "error": err}
 
 
@@ -2388,7 +2392,8 @@ def _activate_prebuilt(sbin):
             ok, err = router_ctl.restart(sbin, config.ini_path(), c["router_port"],
                                          c.get("router_host", "127.0.0.1"),
                                          c.get("router_api_key", ""), LOGDIR,
-                                         c.get("router_local_key", ""), _router_pool(c, sbin))
+                                         c.get("router_local_key", ""), _router_pool(c, sbin),
+                                         slot_save=_el_slot_save(c))
         except Exception as e:
             ok, err = False, str(e)
         return ok, err
@@ -2768,6 +2773,13 @@ GAMEMODE = gamemode.GameMode(cfg, gamemode.detect, _game_loaded, _game_unload, _
 
 ELASTIC_DIR = router_ctl.slot_save_dir(LOGDIR)
 _EL_LAYOUTS = {}
+
+
+def _el_slot_save(c):
+    """Whether the router gets a slot save folder: only while Elastic VRAM is
+    on and keeps conversations. Read when the router (re)starts; toggling
+    either never restarts it (that would unload the model being kept)."""
+    return bool(c.get("elastic_vram") and c.get("elastic_keep_conversation", True))
 
 
 def _el_layout(path):

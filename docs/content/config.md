@@ -73,7 +73,7 @@ order: 1
 | `game_mode_restore` | bool | `True` | Load the unloaded models again when the game closes. |
 | `elastic_vram` | bool | `False` | Move a loaded model's layers to the CPU when other apps need VRAM, and back after (Setup > Elastic VRAM). NVIDIA only. |
 | `elastic_grow` | bool | `True` | Grow resized models back automatically once the VRAM is free. Off: only the dashboard chip grows them back. |
-| `elastic_keep_conversation` | bool | `True` | Save and restore the model's conversation (slot state) around each resize. Needs a router started with `--slot-save-path`. |
+| `elastic_keep_conversation` | bool | `True` | Save and restore the model's conversation (slot state) around each resize. Needs a router started with `--slot-save-path`, which LlamaForge passes only while this and `elastic_vram` are on: restart the router once after turning them on. |
 | `elastic_headroom_mib` | int | `1536` | VRAM to keep free on each GPU, 512-16384 MiB. A model shrinks when less than half of it is free. |
 | `elastic_placed` | object | `{}` | Internal: the `models.ini` keys Elastic VRAM wrote per model and the values they replaced, so they can be taken out again. Not writable from the browser. |
 

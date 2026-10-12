@@ -10,7 +10,7 @@ import slots
 from routes import Req
 
 
-def spawn(pool=None, slot_save=False, makedirs=None):
+def spawn(pool=None, slot_save=False, makedirs=None, keep=True):
     with mock.patch.object(router_ctl.os.path, "exists", return_value=True), \
          mock.patch.object(router_ctl, "is_running", return_value=False), \
          mock.patch.object(router_ctl, "supports_cors_origins", return_value=True), \
@@ -20,7 +20,7 @@ def spawn(pool=None, slot_save=False, makedirs=None):
          mock.patch.object(router_ctl.procs, "write_pid"), \
          mock.patch.object(router_ctl.subprocess, "Popen") as popen:
         ok, err = router_ctl.start("server", "models.ini", 8080, "127.0.0.1", "", "logs",
-                                   "L" * 43, pool)
+                                   "L" * 43, pool, slot_save=keep)
     assert ok, err
     return popen.call_args
 
@@ -40,6 +40,30 @@ class Start(unittest.TestCase):
 
     def test_no_slot_save_path_on_builds_without_it(self):
         self.assertNotIn("--slot-save-path", spawn().args[0])
+
+    def test_no_slot_save_path_unless_asked(self):
+        # Elastic VRAM off: API-key holders get no way to write slot dumps to disk
+        argv = spawn(slot_save=True, keep=False).args[0]
+        self.assertNotIn("--slot-save-path", argv)
+        with mock.patch.object(router_ctl.os.path, "exists", return_value=True), \
+             mock.patch.object(router_ctl, "is_running", return_value=False), \
+             mock.patch.object(router_ctl, "supports_slot_save", return_value=True), \
+             mock.patch.object(router_ctl, "supports_cors_origins", return_value=True), \
+             mock.patch("builtins.open", mock.mock_open()), \
+             mock.patch.object(router_ctl.procs, "write_pid"), \
+             mock.patch.object(router_ctl.subprocess, "Popen") as popen:
+            router_ctl.start("server", "models.ini", 8080, "127.0.0.1", "", "logs", "L" * 43)
+        self.assertNotIn("--slot-save-path", popen.call_args.args[0])   # off by default
+
+    def test_restart_passes_slot_save_on(self):
+        seen = []
+        with mock.patch.object(router_ctl.network_policy, "start_error", return_value=""), \
+             mock.patch.object(router_ctl, "stop", return_value=True), \
+             mock.patch.object(router_ctl, "start",
+                               side_effect=lambda *a, **k: seen.append(k) or (True, "")):
+            router_ctl.restart("server", "models.ini", 8080, "127.0.0.1", "", "logs", "",
+                               None, slot_save=True)
+        self.assertEqual(seen, [{"slot_save": True}])
 
     def test_single_mode_is_unchanged(self):
         argv = spawn().args[0]
@@ -67,7 +91,7 @@ class Start(unittest.TestCase):
         with mock.patch.object(router_ctl.network_policy, "start_error", return_value=""), \
              mock.patch.object(router_ctl, "stop", return_value=True), \
              mock.patch.object(router_ctl, "start",
-                               side_effect=lambda *a: seen.append(a) or (True, "")):
+                               side_effect=lambda *a, **k: seen.append(a) or (True, "")):
             router_ctl.restart("server", "models.ini", 8080, "127.0.0.1", "", "logs", "",
                                {"models_max": 3, "autoload": False})
         self.assertEqual(seen[0][-1], {"models_max": 3, "autoload": False})
@@ -139,6 +163,17 @@ class ReconcilePool(RoutesBase):
     def test_a_single_router_restarts_into_the_pool(self):
         self.assertTrue(routes.reconcile_router_pool())
         self.assertEqual(self.restart.call_args.args[-1], POOL)
+        self.assertFalse(self.restart.call_args.kwargs["slot_save"])   # Elastic is off
+
+    def test_the_slot_save_folder_only_while_elastic_keeps_conversations(self):
+        for on, keep, want in ((True, True, True), (True, False, False), (False, True, False)):
+            self.cfg.update(elastic_vram=on, elastic_keep_conversation=keep)
+            self.assertIs(routes._el_slot_save(dict(self.cfg)), want)
+        self.cfg["elastic_vram"] = True
+        self.cfg.pop("elastic_keep_conversation")
+        self.assertTrue(routes._el_slot_save(dict(self.cfg)))   # keep defaults to on
+        self.assertTrue(routes.reconcile_router_pool())
+        self.assertTrue(self.restart.call_args.kwargs["slot_save"])
 
     def test_a_matching_router_is_left_alone(self):
         self.pool_now.return_value = dict(POOL)

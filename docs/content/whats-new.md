@@ -10,7 +10,7 @@ This page summarizes the most recent additions to LlamaForge. Each entry links t
 
 ## Unreleased: Elastic VRAM
 
-- **Elastic VRAM.** When another app needs your GPU, LlamaForge moves a loaded model's layers to the CPU instead of unloading it (MoE experts first), keeps the conversation through llama.cpp's slot save and restore, and moves the layers back once the memory is free. A resized model is much slower, and the dashboard row says so; click its chip to grow it back. NVIDIA only, off by default, and new: not yet tested on many machines. See [Setup > Elastic VRAM](setup.md#elastic-vram). API: `/api/elastic`, `/api/elastic/grow`.
+- **Elastic VRAM.** When another app needs your GPU, LlamaForge moves a loaded model's layers to the CPU instead of unloading it (MoE experts first), keeps the conversation through llama.cpp's slot save and restore (after one router restart; the router gets a save folder only while Elastic is on), and moves the layers back once the memory is free. A resized model is much slower, and the dashboard row says so; click its chip to grow it back. NVIDIA only, off by default, and new: not yet tested on many machines. See [Setup > Elastic VRAM](setup.md#elastic-vram). API: `/api/elastic`, `/api/elastic/grow`.
 
 ## v0.16.3: Game mode
 
