@@ -10,6 +10,7 @@ PUBLIC_CONFIG_KEYS = (
     "theme", "cvd", "skin", "auto_load_model", "vram_bandwidths", "presets",
     "preset_bindings", "active_engine", "profiles",
     "game_mode", "game_mode_keep", "game_mode_games", "game_mode_restore",
+    "elastic_vram", "elastic_grow", "elastic_keep_conversation", "elastic_headroom_mib",
 )
 
 

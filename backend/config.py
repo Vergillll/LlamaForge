@@ -83,6 +83,11 @@ DEFAULTS = {
     "game_mode_keep":    [],                    # model ids game mode leaves loaded
     "game_mode_games":   [],                    # extra executables that count as games
     "game_mode_restore": True,                  # load them again when the game closes
+    "elastic_vram":      False,                 # resize models when other apps need VRAM
+    "elastic_grow":      True,                  # grow them back once it's free
+    "elastic_keep_conversation": True,          # slot save/restore around a resize
+    "elastic_headroom_mib": 1536,               # VRAM to keep free per GPU
+    "elastic_placed":    {},                    # {model: {"keys", "was"}} - ours, reversible
     "slots":             {"main": "", "placed": {}},  # main model id; {model: keys LlamaForge wrote}
     # Per-model builds (builds.py): {model id: install dir name | "ik_llama"}.
     # A pin other than the router's own build runs the model in its own process.

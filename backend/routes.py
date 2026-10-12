@@ -2011,6 +2011,10 @@ CONFIG_WRITABLE = {
     "game_mode_keep":          _v_dirs,     # model ids that stay loaded
     "game_mode_games":         _v_dirs,     # extra game executables
     "game_mode_restore":       _v_bool,
+    "elastic_vram":            _v_bool,
+    "elastic_grow":            _v_bool,
+    "elastic_keep_conversation": _v_bool,
+    "elastic_headroom_mib":    _v_int(512, 16384),
 }
 # what the router is started with: changing one restarts it (and unloads models)
 _POOL_KEYS = ("multi_model", "slot_cap", "slot_autoload")
