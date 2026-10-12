@@ -11,6 +11,8 @@ wiki/
 # pi installed on request (piinstall)
 /agents/
 logs/
+# Elastic VRAM's conversation snapshots (deleted after each resize)
+slot-saves/
 __pycache__/
 *.pyc
 

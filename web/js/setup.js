@@ -4,6 +4,7 @@ import { $, $$, esc, setHTML, api, toast, askYes } from "./core.js";
 import { S, models, config as cfgOf } from "./state.js";
 import { emit } from "./bus.js";
 import { applyPool } from "./slots.js";
+import * as elastic from "./elastic.js";
 
 let vllmSetupPoll = null;
 let setupGeneration = 0;
@@ -571,6 +572,50 @@ function wireGame(generation) {
   };
 }
 
+function elasticMarkup() {
+  const c = cfgOf(), e = (S.STATE && S.STATE.elastic) || {};
+  const box = (id, on) => `<input type="checkbox" id="${id}" ${on ? "checked" : ""}>`;
+  const headGb = ((c.elastic_headroom_mib ?? 1536) / 1024).toFixed(1);
+  const gpu = elastic.gpuNote(S.STATE);
+  return `<div class="card" id="elastic-card"><h3>Elastic VRAM</h3>
+      <div class="note" style="margin-top:0">When another app needs your GPU, loaded models move layers to the CPU instead of being unloaded, and move back once the memory is free again. A moved model is slower. The conversation is kept when the router supports saving it.</div>
+      ${gpu ? `<div class="slotnote warn">${esc(gpu)}</div>` : ""}
+      <div class="kv"><label class="k" for="el-on">resize models when other apps need VRAM</label><span class="v">${box("el-on", c.elastic_vram)}</span></div>
+      <div class="kv"><label class="k" for="el-grow">grow back automatically</label><span class="v">${box("el-grow", c.elastic_grow !== false)}</span></div>
+      <div class="kv"><label class="k" for="el-keep">keep conversations across resizes</label><span class="v">${box("el-keep", c.elastic_keep_conversation !== false)}</span></div>
+      <div class="kv"><label class="k" for="el-head">VRAM to keep free per GPU (GB)</label><span class="v"><input type="number" id="el-head" min="0.5" max="16" step="0.5" value="${esc(headGb)}" style="width:90px"></span></div>
+      <div class="kv"><span class="k">now</span><span class="v ${e.swapping || (e.models || []).some(m => m.at > 0) ? "warn" : ""}" id="el-status">${esc(elastic.statusText(e))}</span></div>
+      ${elastic.eventsMarkup(e)}
+      <div class="actions"><button id="el-save">Save</button><span class="msg" id="el-msg"></span></div>
+      <div class="note">It checks every 5 seconds. A model shrinks after two checks with less than half the free VRAM above, and grows back after 30 seconds with room to spare (at least 2 minutes after the last change, longer if an app keeps taking the memory back). A resized model runs much slower: a 27B went from 23 to 4 tokens/s at 40 of 64 layers. A resize reloads the model, from a few seconds for a small one to about 20 for a 27B; requests in that window wait or fail.</div>
+      <div class="note">Turning it off doesn't restore models at once: each one goes back to full size when it fits again, after the same cooldown. Not resized: models on a build of their own, ik_llama and vLLM. Context size, quant and cache type never change. Conversations are kept only on a router LlamaForge started (it adds <b>--slot-save-path</b>); the snapshot files are deleted right after each resize.</div>
+    </div>`;
+}
+
+function wireElastic(generation) {
+  const save = $("#el-save");
+  if (!save) return;
+  const msg = (t, c) => { const m = $("#el-msg"); if (m) { m.className = "msg " + c; m.textContent = t; } };
+  save.onclick = async () => {
+    const gbVal = Number($("#el-head").value);
+    if (!(gbVal >= 0.5 && gbVal <= 16)) return msg("keep 0.5-16 GB free", "err");
+    const body = {
+      elastic_vram: $("#el-on").checked,
+      elastic_grow: $("#el-grow").checked,
+      elastic_keep_conversation: $("#el-keep").checked,
+      elastic_headroom_mib: Math.round(gbVal * 1024),
+    };
+    msg("saving...", "work");
+    const r = await api("/api/config", body).catch(() => null);
+    if (!setupViewActive(generation)) return;
+    if (!r || !r.ok) return msg((r && r.error) || "save failed", "err");
+    if (S.STATE) S.STATE.config = r.config;
+    if (r.rejected) return msg(`refused: ${r.rejected.join(", ")}`, "err");
+    const shrunk = ((S.STATE && S.STATE.elastic && S.STATE.elastic.models) || []).some(m => m.at > 0);
+    msg(body.elastic_vram ? "on" : shrunk ? "off · resized models go back once they fit" : "off", "ok");
+  };
+}
+
 function wireSlots(generation) {
   const sl = slotState(), save = $("#mm-save");
   if (!sl || !save) return;
@@ -663,6 +708,7 @@ export async function loadSetup() {
     </div>
     ${slotsMarkup()}
     ${gameMarkup()}
+    ${elasticMarkup()}
     ${networkMarkup(net)}
     <div id="agent-connect" class="card"></div>`
     + (vs.supported === false ? "" : `<div class="card"><h3>vLLM Backend (WSL2)</h3>
@@ -694,6 +740,7 @@ export async function loadSetup() {
   $("#btn-missing").onclick = checkMissing;
   wireSlots(generation);
   wireGame(generation);
+  wireElastic(generation);
   const autoSel = $("#auto-load");
   if (autoSel) autoSel.onchange = async () => {
     await api("/api/config", {auto_load_model: autoSel.value});

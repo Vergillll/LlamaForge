@@ -12,7 +12,7 @@ Pure Python stdlib.
 import json, os, socket, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import config, wiki, anthropic_shim, chatproxy
+import config, wiki, anthropic_shim, chatproxy, slotkeep
 import routes
 from routes import ApiError, Req
 
@@ -461,6 +461,8 @@ def main():
     except Exception as e:
         print(f"  WARNING: embers scheduler did not start ({type(e).__name__}: {e})")
     routes.GAMEMODE.start()  # idle unless game_mode is on in Setup
+    slotkeep.sweep(routes.ELASTIC_DIR)  # conversation snapshots a crash left behind
+    routes.ELASTIC.start()   # idle unless elastic_vram is on in Setup
     import threading
     threading.Thread(target=_router_startup, args=(c.get("auto_load_model"),),
                      daemon=True, name="router-startup").start()

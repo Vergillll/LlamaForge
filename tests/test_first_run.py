@@ -115,11 +115,14 @@ class RouterPortConflictTest(unittest.TestCase):
                                                        types.SimpleNamespace(pid=4242))[1]
         self._saved_cors = router_ctl.supports_cors_origins   # its --help probe also Popens
         router_ctl.supports_cors_origins = lambda server_bin: False
+        self._saved_slot = router_ctl.supports_slot_save
+        router_ctl.supports_slot_save = lambda server_bin: False
 
     def tearDown(self):
         router_ctl.is_running = self._saved
         router_ctl.subprocess.Popen = self._saved_popen
         router_ctl.supports_cors_origins = self._saved_cors
+        router_ctl.supports_slot_save = self._saved_slot
 
     def test_refuses_to_start_when_port_is_taken(self):
         router_ctl.is_running = lambda port: True

@@ -10,11 +10,12 @@ import slots
 from routes import Req
 
 
-def spawn(pool=None):
+def spawn(pool=None, slot_save=False, makedirs=None):
     with mock.patch.object(router_ctl.os.path, "exists", return_value=True), \
          mock.patch.object(router_ctl, "is_running", return_value=False), \
          mock.patch.object(router_ctl, "supports_cors_origins", return_value=True), \
-         mock.patch.object(router_ctl.os, "makedirs"), \
+         mock.patch.object(router_ctl, "supports_slot_save", return_value=slot_save), \
+         mock.patch.object(router_ctl.os, "makedirs", side_effect=makedirs), \
          mock.patch("builtins.open", mock.mock_open()), \
          mock.patch.object(router_ctl.procs, "write_pid"), \
          mock.patch.object(router_ctl.subprocess, "Popen") as popen:
@@ -25,6 +26,21 @@ def spawn(pool=None):
 
 
 class Start(unittest.TestCase):
+    def test_slot_save_path_when_the_build_has_it(self):
+        argv = spawn(slot_save=True).args[0]
+        path = argv[argv.index("--slot-save-path") + 1]
+        self.assertEqual(os.path.basename(path), "slot-saves")
+
+    def test_unusable_slot_save_dir_never_blocks_the_router(self):
+        def md(path, *a, **k):
+            if os.path.basename(path) == "slot-saves":
+                raise OSError("a file is in the way")
+        argv = spawn(slot_save=True, makedirs=md).args[0]
+        self.assertNotIn("--slot-save-path", argv)
+
+    def test_no_slot_save_path_on_builds_without_it(self):
+        self.assertNotIn("--slot-save-path", spawn().args[0])
+
     def test_single_mode_is_unchanged(self):
         argv = spawn().args[0]
         self.assertEqual(argv[argv.index("--models-max") + 1], "1")

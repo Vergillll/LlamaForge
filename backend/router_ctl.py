@@ -83,6 +83,17 @@ def supports_cors_origins(server_bin):
     return "--cors-origins" in _help_text(server_bin)
 
 
+def supports_slot_save(server_bin):
+    """Elastic VRAM keeps conversations through /slots save/restore, which
+    needs a save folder; the router hands its own flag to every model."""
+    return "--slot-save-path" in _help_text(server_bin)
+
+
+def slot_save_dir(logdir):
+    """<data>/slot-saves, beside logs/. Gitignored; slotkeep sweeps it."""
+    return os.path.join(os.path.dirname(os.path.abspath(logdir)), "slot-saves")
+
+
 def _pid_on_port(port):
     if not osplat.IS_WIN:
         return osplat.pid_on_port_posix(port)
@@ -172,6 +183,12 @@ def start(server_bin, models_ini, port, host, api_key, logdir, local_key="", poo
             "--host", host, "--port", str(port), "--metrics"]
     if pool and not pool.get("autoload", True):
         args.append("--no-models-autoload")
+    if supports_slot_save(server_bin):
+        try:                      # never let this block the router starting
+            os.makedirs(slot_save_dir(logdir), exist_ok=True)
+            args += ["--slot-save-path", slot_save_dir(logdir)]
+        except OSError:
+            pass
     args += network_policy.router_auth_args(host, api_key or local_key,
                                             supports_cors_origins(server_bin))
     out = logfiles.open_append(os.path.join(logdir, "router.out.log"))

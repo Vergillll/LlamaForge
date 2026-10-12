@@ -1,0 +1,502 @@
+"""Elastic VRAM wiring: config, the swap order, the ini record, the routes."""
+import conftest_paths  # noqa: F401
+import os
+import shutil
+import tempfile
+import unittest
+from unittest import mock
+
+import config
+
+
+class TempConfig(unittest.TestCase):
+    def setUp(self):
+        self._saved = config.CONFIG
+        self._dir = tempfile.mkdtemp()
+        config.CONFIG = os.path.join(self._dir, "config.json")
+        self.ini = os.path.join(self._dir, "models.ini")
+        with open(self.ini, "w", encoding="utf-8") as f:
+            f.write("[*]\nctx-size = 8192\n\n[big]\nmodel = D:/m/big.gguf\nn-gpu-layers = 99\n")
+        config.update({"models_ini": self.ini})
+
+    def tearDown(self):
+        config.CONFIG = self._saved
+        shutil.rmtree(self._dir, ignore_errors=True)
+
+
+class ConfigTest(TempConfig):
+    def test_defaults(self):
+        c = config.load()
+        self.assertEqual((c["elastic_vram"], c["elastic_grow"], c["elastic_keep_conversation"],
+                          c["elastic_headroom_mib"], c["elastic_placed"]),
+                         (False, True, True, 1536, {}))
+
+    def test_settings_are_writable_and_public(self):
+        import routes
+        code, out = routes.post_config(routes.Req({
+            "elastic_vram": True, "elastic_grow": False, "elastic_keep_conversation": False,
+            "elastic_headroom_mib": 2048}))
+        self.assertEqual(code, 200)
+        self.assertNotIn("rejected", out)
+        self.assertEqual(out["config"]["elastic_headroom_mib"], 2048)
+        self.assertIs(out["config"]["elastic_grow"], False)
+        self.assertIs(out["config"]["elastic_vram"], True)
+        self.assertNotIn("elastic_placed", out["config"])
+
+    # post_config names refused keys in out["rejected"] when something else
+    # was accepted, and raises ApiError(400) naming them when nothing was.
+    def test_the_record_is_not_writable_from_the_browser(self):
+        import routes
+        _, out = routes.post_config(routes.Req({"elastic_placed": {"big": {}}, "elastic_vram": True}))
+        self.assertIn("elastic_placed", out.get("rejected", []))
+        with self.assertRaises(routes.ApiError) as cm:
+            routes.post_config(routes.Req({"elastic_placed": {"big": {}}}))
+        self.assertEqual(cm.exception.status, 400)
+        self.assertIn("elastic_placed", cm.exception.message)
+        self.assertEqual(config.load()["elastic_placed"], {})
+
+    def test_headroom_bounds(self):
+        import routes
+        for bad in (10, 20000, True, "2048"):
+            _, out = routes.post_config(routes.Req({"elastic_headroom_mib": bad, "elastic_vram": True}))
+            self.assertIn("elastic_headroom_mib", out.get("rejected", []), bad)
+        self.assertEqual(config.load()["elastic_headroom_mib"], 1536)
+
+
+
+
+STEP48 = {"keys": {"n-gpu-layers": "48"}, "gpu_layers": 48, "cpu_moe": 0, "layers": 64}
+STEP32 = {"keys": {"n-gpu-layers": "32"}, "gpu_layers": 32, "cpu_moe": 0, "layers": 64}
+TOP = {"keys": {}, "gpu_layers": 64, "cpu_moe": 0, "layers": 64}
+LAYOUT = {"arch": "x", "kv": {"block_count": 64}, "tensors": []}
+
+
+def write_ini(path, big_section):
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("[*]\nctx-size = 8192\n\n[big]\nmodel = D:/m/big.gguf\n" + big_section)
+
+
+class SwapTest(TempConfig):
+    def run_swap(self, step, load_error=None, set_keys=None, need=8000, used=(3000, 12000)):
+        import routes
+        order = []
+        real = set_keys or config.set_keys
+
+        def write(mid, updates, *a, **k):
+            order.append(("ini", mid, updates))
+            return real(mid, updates, *a, **k)
+
+        def reload(mid):
+            order.append(("reload", mid))
+            return True
+
+        def load(mid, role):
+            order.append(("load", mid))
+            if load_error:
+                raise RuntimeError(load_error)
+        snaps = iter([{0: {"used": used[0], "total": 16000}}, {0: {"used": used[1], "total": 16000}}])
+        with mock.patch.object(config, "set_keys", write), \
+             mock.patch.object(routes, "_reload_preset", reload), \
+             mock.patch.object(routes, "_load_and_wait", load), \
+             mock.patch.object(routes, "_slots_on", return_value=False), \
+             mock.patch.object(routes, "_el_gpus", lambda: next(snaps)), \
+             mock.patch.object(routes, "_el_layout", return_value=LAYOUT if need else None), \
+             mock.patch.object(routes.footprint, "predict", return_value={"need_mib": need or 0}), \
+             mock.patch.object(routes.SLOTS.store, "record") as rec:
+            err = routes._el_swap("big", step)
+        return err, order, rec
+
+    def test_shrink_writes_the_step_reloads_loads_and_records(self):
+        err, order, rec = self.run_swap(STEP48)
+        self.assertEqual(err, "")
+        self.assertEqual(order, [("ini", "big", {"n-gpu-layers": "48"}), ("reload", "big"),
+                                 ("load", "big")])
+        self.assertEqual(config.read_sections()["big"]["n-gpu-layers"], "48")
+        self.assertEqual(config.load()["elastic_placed"],
+                         {"big": {"keys": {"n-gpu-layers": "48"}, "was": {"n-gpu-layers": "99"}}})
+        k, devices, fp = rec.call_args.args[:3]
+        self.assertEqual((devices, fp), ([0], {0: 9000}))
+
+    def test_back_at_the_top_puts_the_user_value_back(self):
+        self.run_swap(STEP48)
+        self.run_swap(TOP)
+        self.assertEqual(config.read_sections()["big"]["n-gpu-layers"], "99")
+        self.assertEqual(config.load()["elastic_placed"], {})
+
+    def test_a_failed_load_says_why(self):
+        err, _, rec = self.run_swap(STEP48, load_error="CUDA out of memory")
+        self.assertEqual(err, "CUDA out of memory")
+        rec.assert_not_called()
+
+    def test_giveup_restores_the_keys(self):
+        import routes
+        self.run_swap(STEP48)
+        with mock.patch.object(routes, "_reload_preset", return_value=False) as rl:
+            routes._el_giveup("big")
+        rl.assert_called_once_with("big")
+        self.assertEqual(config.read_sections()["big"]["n-gpu-layers"], "99")
+        self.assertEqual(config.load()["elastic_placed"], {})
+
+    def test_an_aliased_section_keeps_its_spelling_and_footprint_key(self):
+        import routes, footprint
+        write_ini(self.ini, "gpu-layers = 99\n")
+        err, order, rec = self.run_swap(STEP48)
+        self.assertEqual(err, "")
+        self.assertEqual(order[0], ("ini", "big", {"gpu-layers": "48"}))
+        big = config.read_sections()["big"]
+        self.assertEqual(big.get("gpu-layers"), "48")
+        self.assertNotIn("n-gpu-layers", big)
+        self.assertEqual(config.load()["elastic_placed"],
+                         {"big": {"keys": {"gpu-layers": "48"}, "was": {"gpu-layers": "99"}}})
+        # the same identity the pool computes from the section as it now reads
+        want = footprint.key("big", routes.SLOTS.build_id(routes._active_server_bin()),
+                             {"ctx-size": "8192", "model": "D:/m/big.gguf", "gpu-layers": "48"})
+        self.assertEqual(rec.call_args.args[0], want)
+        self.run_swap(TOP)
+        self.assertEqual(config.read_sections()["big"]["gpu-layers"], "99")
+        self.assertEqual(config.load()["elastic_placed"], {})
+
+    def test_a_failed_ini_write_loses_no_user_key(self):
+        # 99 -> 48, then 48 -> 32 where the write fails (the ini keeps 48), then
+        # back to the top: the user's 99 must come back, not a stranded 48.
+        self.run_swap(STEP48)
+
+        def boom(*a, **k):
+            raise OSError("ini locked")
+        with self.assertRaises(OSError):
+            self.run_swap(STEP32, set_keys=boom)
+        self.assertEqual(config.read_sections()["big"]["n-gpu-layers"], "48")
+        self.assertEqual(config.load()["elastic_placed"]["big"]["keys"], {"n-gpu-layers": "48"})
+        self.run_swap(TOP)
+        self.assertEqual(config.read_sections()["big"]["n-gpu-layers"], "99")
+        self.assertEqual(config.load()["elastic_placed"], {})
+
+    def test_a_record_that_fails_after_the_write_puts_the_ini_back(self):
+        # 99 -> 48, then 48 -> 32 where saving the new record fails after the
+        # ini got 32: the ini goes back to 48 (what the record still says),
+        # and the way back to the top still finds the user's 99.
+        import routes
+        self.run_swap(STEP48)
+        real, n = routes._el_record, []
+
+        def flaky(mid, rec):
+            n.append(rec)
+            if len(n) == 2:                       # pending lands, the final one fails
+                raise OSError("config.json locked")
+            return real(mid, rec)
+        with mock.patch.object(routes, "_el_record", flaky):
+            with self.assertRaises(OSError):
+                self.run_swap(STEP32)
+        self.assertEqual(config.read_sections()["big"]["n-gpu-layers"], "48")
+        self.run_swap(TOP)
+        self.assertEqual(config.read_sections()["big"]["n-gpu-layers"], "99")
+        self.assertEqual(config.load()["elastic_placed"], {})
+
+    def test_a_failed_record_after_adding_a_key_removes_it_again(self):
+        import routes
+        write_ini(self.ini, "")                   # no n-gpu-layers of the user's
+        real, n = routes._el_record, []
+
+        def flaky(mid, rec):
+            n.append(rec)
+            if len(n) == 2:
+                raise OSError("config.json locked")
+            return real(mid, rec)
+        with mock.patch.object(routes, "_el_record", flaky):
+            with self.assertRaises(OSError):
+                self.run_swap(STEP48)
+        self.assertNotIn("n-gpu-layers", config.read_sections()["big"])
+
+    def test_a_reload_that_dies_after_the_write_is_still_undoable(self):
+        import routes
+        with mock.patch.object(routes, "_reload_preset", side_effect=OSError("router went away")):
+            with self.assertRaises(OSError):
+                routes._el_swap("big", STEP48)
+        self.assertEqual(config.read_sections()["big"]["n-gpu-layers"], "48")
+        self.assertEqual(config.load()["elastic_placed"],
+                         {"big": {"keys": {"n-gpu-layers": "48"}, "was": {"n-gpu-layers": "99"}}})
+
+    def test_a_grow_whose_write_fails_keeps_the_record(self):
+        self.run_swap(STEP48)
+
+        def boom(*a, **k):
+            raise OSError("ini locked")
+        with self.assertRaises(OSError):
+            self.run_swap(TOP, set_keys=boom)
+        self.assertEqual(config.read_sections()["big"]["n-gpu-layers"], "48")
+        self.assertIn("big", config.load()["elastic_placed"])
+
+    def test_a_footprint_far_from_the_prediction_is_not_recorded(self):
+        # another app grew by 10 GB during the load: 19000 MiB is not this step
+        _, _, rec = self.run_swap(STEP48, used=(3000, 22000))
+        rec.assert_not_called()
+        _, _, rec = self.run_swap(STEP32, used=(3000, 4000))       # 1000 vs 8000
+        rec.assert_not_called()
+
+    def test_without_a_layout_the_measurement_is_recorded_as_is(self):
+        _, _, rec = self.run_swap(STEP48, need=None, used=(3000, 22000))
+        self.assertEqual(rec.call_args.args[2], {0: 19000})
+
+    def test_the_measurement_does_not_depend_on_elastic_being_on(self):
+        # growing to the top clears the record and elastic_vram may be off:
+        # the swap still measures (its snapshot isn't the gated one)
+        self.run_swap(STEP48)
+        _, _, rec = self.run_swap(TOP)
+        rec.assert_called_once()
+
+    def test_another_engine_is_refused_before_anything_is_written(self):
+        config.update({"active_engine": "ikllama"})
+        err, order, _ = self.run_swap(STEP48)
+        self.assertTrue(err)
+        self.assertEqual(order, [])
+        self.assertEqual(config.load()["elastic_placed"], {})
+
+
+class EngineTest(TempConfig):
+    """Elastic only ever touches the llama.cpp models.ini, whatever is active."""
+
+    def setUp(self):
+        super().setUp()
+        self.ik = os.path.join(self._dir, "models-ik.ini")
+        with open(self.ik, "w", encoding="utf-8") as f:
+            f.write("[big]\nmodel = D:/m/big.gguf\nn-gpu-layers = 7\n")
+        config.set_keys("big", {"n-gpu-layers": "48"})
+        config.update({"ik_llama_models_ini": self.ik,
+                       "elastic_placed": {"big": {"keys": {"n-gpu-layers": "48"},
+                                                  "was": {"n-gpu-layers": "99"}}}})
+
+    def test_tidy_waits_for_llamacpp_to_be_active_again(self):
+        import routes
+        config.update({"active_engine": "ikllama"})
+        with mock.patch.object(routes, "router", side_effect=AssertionError("asked the router")):
+            routes._el_tidy()
+        self.assertIn("big", config.load()["elastic_placed"])
+        self.assertEqual(config.read_sections(self.ini)["big"]["n-gpu-layers"], "48")
+
+    def test_giveup_on_another_engine_changes_nothing(self):
+        import routes
+        config.update({"active_engine": "ikllama"})
+        with mock.patch.object(routes, "_reload_preset", side_effect=AssertionError("reloaded")):
+            routes._el_giveup("big")
+        self.assertIn("big", config.load()["elastic_placed"])
+
+    def test_writes_go_to_the_llamacpp_ini_even_if_ini_path_points_elsewhere(self):
+        import routes
+        with mock.patch.object(config, "ini_path",
+                               lambda engine=None: self.ini if engine == "llamacpp" else self.ik), \
+             mock.patch.object(routes, "router", lambda *a, **k: (200, {"data": []})):
+            routes._el_tidy()
+        self.assertEqual(config.read_sections(self.ini)["big"]["n-gpu-layers"], "99")
+        self.assertEqual(config.read_sections(self.ik)["big"]["n-gpu-layers"], "7")
+        self.assertEqual(config.load()["elastic_placed"], {})
+
+
+class TidyTest(TempConfig):
+    def test_keys_of_a_model_that_is_no_longer_loaded_go_back(self):
+        import routes
+        config.set_keys("big", {"n-gpu-layers": "48"})
+        config.update({"elastic_placed": {"big": {"keys": {"n-gpu-layers": "48"},
+                                                  "was": {"n-gpu-layers": "99"}}}})
+        calls = []
+
+        def fake_router(path, method="GET", body=None, timeout=30):
+            calls.append(path)
+            return 200, {"data": [{"id": "big", "status": {"value": "unloaded"}}]}
+        with mock.patch.object(routes, "router", fake_router):
+            routes._el_tidy()
+        self.assertEqual(config.read_sections()["big"]["n-gpu-layers"], "99")
+        self.assertEqual(config.load()["elastic_placed"], {})
+        self.assertIn("/models?reload=1", calls)
+
+    def test_a_loaded_model_is_left_alone(self):
+        import routes
+        config.set_keys("big", {"n-gpu-layers": "48"})
+        placed = {"big": {"keys": {"n-gpu-layers": "48"}, "was": {"n-gpu-layers": "99"}}}
+        config.update({"elastic_placed": placed})
+        with mock.patch.object(routes, "router", lambda *a, **k: (
+                200, {"data": [{"id": "big", "status": {"value": "loaded"}}]})):
+            routes._el_tidy()
+        self.assertEqual(config.read_sections()["big"]["n-gpu-layers"], "48")
+        self.assertEqual(config.load()["elastic_placed"], placed)
+
+    def test_a_router_that_does_not_answer_changes_nothing(self):
+        import routes
+        config.update({"elastic_placed": {"big": {"keys": {"n-gpu-layers": "48"},
+                                                  "was": {"n-gpu-layers": "99"}}}})
+        with mock.patch.object(routes, "router", lambda *a, **k: (599, {"error": "refused"})):
+            routes._el_tidy()
+        self.assertIn("big", config.load()["elastic_placed"])
+
+    def test_a_failure_midway_still_reloads_and_the_next_tidy_finishes(self):
+        import routes
+        with open(self.ini, "a", encoding="utf-8") as f:
+            f.write("\n[small]\nmodel = D:/m/small.gguf\nn-gpu-layers = 40\n")
+        config.set_keys("big", {"n-gpu-layers": "48"})
+        config.set_keys("small", {"n-gpu-layers": "20"})
+        config.update({"elastic_placed": {
+            "big": {"keys": {"n-gpu-layers": "48"}, "was": {"n-gpu-layers": "99"}},
+            "small": {"keys": {"n-gpu-layers": "20"}, "was": {"n-gpu-layers": "40"}}}})
+        calls = []
+
+        def fake_router(path, method="GET", body=None, timeout=30):
+            calls.append(path)
+            return 200, {"data": []}
+        real = config.set_keys
+
+        def flaky(mid, updates, *a, **k):
+            if mid == "small":
+                raise OSError("ini locked")
+            return real(mid, updates, *a, **k)
+        with mock.patch.object(routes, "router", fake_router), \
+             mock.patch.object(config, "set_keys", flaky):
+            with self.assertRaises(OSError):
+                routes._el_tidy()
+        self.assertEqual(config.read_sections()["big"]["n-gpu-layers"], "99")
+        self.assertIn("/models?reload=1", calls)          # what was written is picked up
+        self.assertEqual(list(config.load()["elastic_placed"]), ["small"])
+        with mock.patch.object(routes, "router", fake_router):
+            routes._el_tidy()
+        self.assertEqual(config.read_sections()["small"]["n-gpu-layers"], "40")
+        self.assertEqual(config.load()["elastic_placed"], {})
+
+
+class ModelsTest(TempConfig):
+    def models(self, measured=None, gpus=(0,)):
+        import routes
+        with mock.patch.object(routes, "_router_loaded_ids", return_value=["big"]), \
+             mock.patch.object(routes.PROCS, "has", return_value=False), \
+             mock.patch.object(routes, "_el_layout", return_value=LAYOUT), \
+             mock.patch.object(routes.footprint, "predict", return_value={"need_mib": 8000}), \
+             mock.patch.object(routes.SLOTS.store, "measured",
+                               return_value=measured or {}) as m:
+            return routes._el_models(list(gpus)), m
+
+    def place(self, keys, was, section_value=None):
+        config.update({"elastic_vram": True,
+                       "elastic_placed": {"big": {"keys": keys, "was": was}}})
+        if section_value is not None:
+            config.set_keys("big", section_value)
+
+    def test_a_loaded_model_gets_its_ladder_and_current_step(self):
+        self.place({"n-gpu-layers": "48"}, {"n-gpu-layers": "99"}, {"n-gpu-layers": "48"})
+        ms, _ = self.models()
+        self.assertEqual([m["id"] for m in ms], ["big"])
+        self.assertEqual(ms[0]["at"], 1)                        # 48/64: the user's 99 is the top
+        self.assertEqual(len(ms[0]["fps"]), len(ms[0]["steps"]))
+
+    def test_an_aliased_section_finds_its_step(self):
+        import routes, footprint
+        write_ini(self.ini, "gpu-layers = 48\n")
+        self.place({"gpu-layers": "48"}, {"gpu-layers": "99"})
+        ms, measured = self.models()
+        self.assertEqual(ms[0]["steps"][0]["gpu_layers"], 64)  # the user's 99, capped
+        self.assertEqual(ms[0]["at"], 1)
+        build = routes.SLOTS.build_id(routes._active_server_bin())
+        want = footprint.key("big", build, {"ctx-size": "8192", "model": "D:/m/big.gguf",
+                                            "gpu-layers": "48"})
+        self.assertEqual(measured.call_args_list[1].args[0], want)
+
+    def test_a_record_on_no_step_counts_as_the_smallest(self):
+        # 40 isn't a step of this ladder (64/48/32/16/0): resized, place unknown;
+        # the smallest step makes the controller only ever grow it back to 0
+        self.place({"n-gpu-layers": "40"}, {"n-gpu-layers": "99"}, {"n-gpu-layers": "40"})
+        ms, _ = self.models()
+        self.assertEqual(ms[0]["at"], len(ms[0]["steps"]) - 1)
+
+    def test_a_record_the_user_overwrote_is_at_the_top(self):
+        # the user set 30 by hand: nothing of ours is in effect any more
+        self.place({"n-gpu-layers": "48"}, {"n-gpu-layers": "99"}, {"n-gpu-layers": "30"})
+        ms, _ = self.models()
+        self.assertEqual(ms[0]["at"], 0)
+        self.assertEqual(ms[0]["steps"][0]["gpu_layers"], 30)
+
+    def test_the_measurement_for_these_gpus_is_preferred(self):
+        config.update({"elastic_vram": True})
+        ms, _ = self.models({(0,): {0: 5000}, (0, 1): {0: 3000, 1: 3000}, (1,): {1: 9000}},
+                            gpus=(1, 0))
+        self.assertEqual(ms[0]["fps"][0], {0: 3000, 1: 3000})
+        ms, _ = self.models({(0,): {0: 5000}, (1,): {1: 9000}}, gpus=(0, 1))
+        self.assertEqual(ms[0]["fps"][0], {1: 9000})            # else the largest
+
+    def test_off_with_nothing_placed_costs_nothing(self):
+        import routes
+        with mock.patch.object(routes, "_router_loaded_ids",
+                               side_effect=AssertionError("asked the router while off")):
+            self.assertEqual(routes._el_models([0]), [])
+
+
+class SnapshotTest(TempConfig):
+    TELE = [{"index": 0, "name": "a", "used": 3000, "total": 16303, "util": 1, "temp": 40},
+            {"index": 1, "name": "b", "used": 500, "total": 16311, "util": 0, "temp": 35}]
+
+    def test_gpus_by_index_in_mib_and_errors_skipped(self):
+        import routes
+        config.update({"elastic_vram": True})
+        with mock.patch.object(routes.osplat, "IS_MAC", False), \
+             mock.patch.object(routes, "_gpu_telemetry", return_value=self.TELE):
+            self.assertEqual(routes._el_snapshot(), {0: {"used": 3000, "total": 16303},
+                                                     1: {"used": 500, "total": 16311}})
+        with mock.patch.object(routes.osplat, "IS_MAC", False), \
+             mock.patch.object(routes, "_gpu_telemetry", return_value=[{"error": "no smi"}]):
+            self.assertEqual(routes._el_snapshot(), {})
+
+    def test_off_with_nothing_placed_never_runs_nvidia_smi(self):
+        import routes
+        with mock.patch.object(routes.osplat, "IS_MAC", False), \
+             mock.patch.object(routes, "_gpu_telemetry",
+                               side_effect=AssertionError("ran nvidia-smi")):
+            self.assertEqual(routes._el_snapshot(), {})
+
+    def test_off_but_something_placed_still_looks(self):
+        import routes
+        config.update({"elastic_placed": {"big": {"keys": {"n-gpu-layers": "48"}, "was": {}}}})
+        with mock.patch.object(routes.osplat, "IS_MAC", False), \
+             mock.patch.object(routes, "_gpu_telemetry", return_value=self.TELE):
+            self.assertEqual(len(routes._el_snapshot()), 2)
+
+    def test_nvidia_smi_opens_no_console_window_on_windows(self):
+        import routes
+        with mock.patch.object(routes.osplat, "IS_MAC", False), \
+             mock.patch.object(routes.osplat, "IS_WIN", True), \
+             mock.patch.object(routes.subprocess, "check_output", return_value="") as co:
+            routes._gpu_telemetry()
+        self.assertEqual(co.call_args.kwargs.get("creationflags"), 0x08000000)
+
+
+class RouteTest(TempConfig):
+    def test_routes_are_registered(self):
+        import routes
+        self.assertIs(routes.GET_ROUTES["/api/elastic"], routes.get_elastic)
+        self.assertIs(routes.POST_ROUTES["/api/elastic/grow"], routes.post_elastic_grow)
+
+    def test_grow_refuses_a_model_that_is_not_resized(self):
+        import routes
+        code, out = routes.post_elastic_grow(routes.Req({"model": "big"}))
+        self.assertEqual(code, 400)
+        self.assertFalse(out["ok"])
+
+    def test_grow_refuses_a_model_mid_swap(self):
+        import routes
+        st = {"swapping": "big", "models": [{"id": "big", "at": 2}], "events": []}
+        with mock.patch.object(routes.ELASTIC, "status", return_value=st), \
+             mock.patch.object(routes.threading, "Thread",
+                               side_effect=AssertionError("started a grow")):
+            code, out = routes.post_elastic_grow(routes.Req({"model": "big"}))
+        self.assertEqual(code, 409)
+        self.assertFalse(out["ok"])
+        self.assertIn("resized", out["error"])
+
+    def test_state_carries_the_status(self):
+        import routes
+        self.assertIn("events", routes.ELASTIC.status())
+        with mock.patch.object(routes, "REGISTRY") as reg, \
+             mock.patch.object(routes._GPU_TELEMETRY, "get", return_value=[]), \
+             mock.patch.object(routes, "_slots_state", return_value={}):
+            reg.state.return_value = {"models": []}
+            reg.enabled.return_value = []
+            _, s = routes.get_state(routes.Req())
+        self.assertEqual(s["elastic"], routes.ELASTIC.status())
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -12,6 +12,7 @@ import { S, models as modelRows, config as cfgOf } from "./state.js";
 import { on, emit } from "./bus.js";
 import { activeTab } from "./ui.js";
 import * as slots from "./slots.js";
+import * as elastic from "./elastic.js";
 import { bayPlans, bayInputs } from "./bays.js";
 
 const LITE_KNOBS = new Set(["n-gpu-layers","ctx-size","cache-type-k","cache-type-v",
@@ -238,7 +239,7 @@ function rowHead(m, showBackend) {
   return `${compareMode?`<input type="checkbox" class="cmp" data-cmp="${esc(m.id)}" ${cmpSet.has(m.id)?"checked":""} title="pick to compare">`:""}
         <span class="led ${loaded?"loaded":""} ${m.status==="loading"?"loading":""} ${m.failed?"failed":""}"></span>
         <span class="fav ${isFav?"on":""}" data-fav="${esc(m.id)}" title="${isFav?"unfavorite":"favorite"}">&starf;</span>
-        <span class="mid" title="${esc(m.id)}">${esc(m.id)}${beTag}${slots.chip(m)}${buildTag(m)}${vis?'<span class="tag vis">vision</span>':''}${!m.in_ini?'<span class="tag">auto</span>':''}${m.endpoint?`<span class="tag ep" data-ep="${esc(m.endpoint)}" title="click to copy endpoint">${esc(m.endpoint.replace('http://',''))}</span>`:''}</span>
+        <span class="mid" title="${esc(m.id)}">${esc(m.id)}${beTag}${slots.chip(m)}${elastic.chip(S.STATE, m)}${buildTag(m)}${vis?'<span class="tag vis">vision</span>':''}${!m.in_ini?'<span class="tag">auto</span>':''}${m.endpoint?`<span class="tag ep" data-ep="${esc(m.endpoint)}" title="click to copy endpoint">${esc(m.endpoint.replace('http://',''))}</span>`:''}</span>
         <span class="ctxpill"><span class="k">CTX</span> ${esc(m.eff_ctx)}</span>
         ${statCell(m, loaded, stuckSecs)}
         <span class="qbtns">${quickBtn(m)}</span>
@@ -266,7 +267,7 @@ function headSig(m, cols, showBackend) {
   return JSON.stringify([m.id, m.status, m.failed, m.backend, m.endpoint, m.build, m.eff_ctx,
     m.modalities, m.in_ini, favs.has(m.id), compareMode, cmpSet.has(m.id),
     loadQ.findIndex(j => j.id === m.id), loadingSecs(m) >= 20, loadPct(m), cols, showBackend,
-    slots.chipSig(m)]);
+    slots.chipSig(m), elastic.chipSig(S.STATE, m)]);
 }
 // Keyed so only a different model, backend or schema rebuilds the knob grid.
 function knobSig(m) {
@@ -985,6 +986,16 @@ export function initModels() {
     if (epChip) { e.stopPropagation(); navigator.clipboard.writeText(epChip.dataset.ep).then(() => toast("Endpoint copied","ok")); return; }
     const favBtn = e.target.closest("#view-models [data-fav]");
     if (favBtn) { e.stopPropagation(); toggleFav(favBtn.dataset.fav); return; }
+    const elGrow = e.target.closest("#view-models [data-elastic-grow]");
+    if (elGrow) {
+      e.stopPropagation(); elGrow.disabled = true;
+      const id = elGrow.dataset.elasticGrow;
+      const r = await api("/api/elastic/grow", {model: id}).catch(() => null);
+      elGrow.disabled = false;
+      toast(r && r.ok ? `Growing ${id} back if it fits; the Setup tab's Elastic VRAM log shows how it went`
+                      : (r && r.error) || "grow failed", r && r.ok ? "ok" : "err");
+      return;
+    }
     const onlySetChip = e.target.closest("#view-models [data-onlyset]");
     if (onlySetChip) { e.stopPropagation(); toggleOnlySet(onlySetChip); return; }
     if (e.target.closest("[data-mclose]")) { closeModal(); return; }
