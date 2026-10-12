@@ -6,6 +6,7 @@ The planning is pure (ladder, footprints, choose, plan_keys). The controller is
 shaped like gamemode.GameMode: a 5 s tick, debounced, with every side effect
 behind an injected io object so the tests drive it with a fake."""
 import collections
+import sys
 import threading
 import time
 
@@ -128,6 +129,11 @@ def plan_keys(section, rec, keys):
     return writes, ({"keys": ours, "was": was} if ours else None)
 
 
+def _warn(what, e):
+    """A background failure, on stderr the way the panel's other loops say it."""
+    print(f"  WARNING: Elastic VRAM {what} ({type(e).__name__}: {e})", file=sys.stderr)
+
+
 def _sum(fps):
     out = {}
     for fp in fps:
@@ -162,7 +168,10 @@ class Elastic:
             standby = enabled and bool(self._io.game_active())
             with self._lock:
                 self._enabled, self._standby = enabled, standby
-            self._io.tidy()
+            try:                         # a stuck record must not stop the rest
+                self._io.tidy()
+            except Exception as e:
+                _warn("tidy failed", e)
             if not enabled:
                 self._shrink_hits = self._grow_hits = 0
                 snap = self._io.snapshot()
@@ -230,8 +239,8 @@ class Elastic:
     def safe_tick(self):
         try:
             self.tick()
-        except Exception:
-            pass
+        except Exception as e:
+            _warn("tick failed", e)
 
     @staticmethod
     def _others_of(snap, models):
@@ -387,8 +396,13 @@ class Elastic:
     def safe_grow(self, mid):
         try:
             self.grow_now(mid)
-        except Exception:
-            pass
+        except Exception as e:
+            _warn(f"growing {mid} back failed", e)
+            with self._lock:
+                m = next((x for x in self._models if x["id"] == mid), None)
+            here = label(m["steps"][m["at"]]) if m else ""
+            self._log(mid, here, here, "you asked", 0, False, None,
+                      f"growing back failed: {type(e).__name__}: {e}")
 
     def status(self):
         with self._lock:
@@ -397,7 +411,9 @@ class Elastic:
                 "cooldown_s": self._cooldown, "waiting": list(self._waiting), "others_mib": dict(self._others),
                 "models": [{"id": m["id"], "at": m["at"], "label": label(m["steps"][m["at"]]),
                             "gpu_layers": m["steps"][m["at"]]["gpu_layers"],
-                            "layers": m["steps"][m["at"]]["layers"]} for m in self._models],
+                            "layers": m["steps"][m["at"]]["layers"],
+                            "steps": len(m["steps"]), "full": label(m["steps"][0])}
+                           for m in self._models],
                 "events": list(self._events)}
 
     # -- background loop --------------------------------------------------

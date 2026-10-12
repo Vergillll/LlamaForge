@@ -1,6 +1,8 @@
 """Elastic VRAM: shrink models when other apps need the GPU, grow them back."""
 import conftest_paths  # noqa: F401
+import io as _io
 import unittest
+from unittest import mock
 
 import elastic
 
@@ -636,6 +638,51 @@ class OffPathBackoffTest(unittest.TestCase):
         clock.t += 250                                          # past the doubled cooldown
         el.tick()
         self.assertEqual(swaps(io), [("swap", "big", 0), ("swap", "big", 1)] * 2)
+
+
+class RobustnessTest(unittest.TestCase):
+    def test_a_failing_tidy_does_not_stop_shrinking(self):
+        io = FakeIO(others=4)
+
+        def boom():
+            raise OSError("ini locked")
+        io.tidy = boom
+        el, _, _ = controller(io)
+        with mock.patch("sys.stderr", new_callable=_io.StringIO) as err:
+            el.tick(); el.tick()
+        self.assertEqual(swaps(io), [("swap", "big", 1)])
+        self.assertIn("ini locked", err.getvalue())
+
+    def test_safe_tick_says_what_went_wrong(self):
+        io = FakeIO()
+
+        def boom(gpus):
+            raise OSError("router down")
+        io.models = boom
+        el, _, _ = controller(io)
+        with mock.patch("sys.stderr", new_callable=_io.StringIO) as err:
+            el.safe_tick()
+        self.assertIn("router down", err.getvalue())
+
+    def test_a_grow_that_blows_up_is_logged_and_shows_in_the_events(self):
+        io = FakeIO(others=4); el, _, _ = controller(io)
+        el.tick(); el.tick()
+
+        def boom(gpus):
+            raise OSError("router down")
+        io.models = boom
+        with mock.patch("sys.stderr", new_callable=_io.StringIO) as err:
+            el.safe_grow("big")
+        self.assertIn("router down", err.getvalue())
+        ev = el.status()["events"][0]
+        self.assertEqual((ev["model"], ev["ok"], ev["reason"]), ("big", False, "you asked"))
+        self.assertIn("router down", ev["note"])
+
+    def test_status_tells_the_ui_the_ladder_size_and_the_full_size(self):
+        io = FakeIO(others=4); el, _, _ = controller(io)
+        el.tick(); el.tick(); el.tick()                         # the third sees the shrink
+        m = el.status()["models"][0]
+        self.assertEqual((m["at"], m["steps"], m["full"]), (1, len(LADDER), "64/64"))
 
 
 if __name__ == "__main__":
