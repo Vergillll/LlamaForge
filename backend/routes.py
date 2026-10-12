@@ -2944,16 +2944,18 @@ def _el_swap(mid, step):
     a single-model router, measure the step's footprint around the load - the
     pool's slot manager records its own.
 
-    The record always matches models.ini: the write is one atomic file
-    replace, held between _el_pending (before) and the new record (after); a
-    write that fails puts the old record back. The unload and reload come
-    after, so they can't strand a key either."""
+    Record and models.ini are kept in step as far as two files can be: the
+    write is one atomic file replace, bracketed by _el_pending (before) and
+    the new record (after). A write that fails puts the old record back; a
+    record that fails after the write puts the ini's old values back, best
+    effort. A key can only leak if that rollback fails too. The unload and
+    reload come after, so they can't strand a key."""
     if not _el_llamacpp():
         return "Elastic VRAM only resizes llama.cpp router models"
     ini = _el_ini()
     old = _el_placed().get(mid)
-    writes, rec = elastic.plan_keys(config.read_sections(ini, raw=True).get(mid) or {},
-                                    old, step["keys"])
+    sec = config.read_sections(ini, raw=True).get(mid) or {}
+    writes, rec = elastic.plan_keys(sec, old, step["keys"])
     if writes:
         _el_record(mid, _el_pending(old, rec))
         try:
@@ -2961,7 +2963,15 @@ def _el_swap(mid, step):
         except Exception:
             _el_record(mid, old)
             raise
-    _el_record(mid, rec)
+    try:
+        _el_record(mid, rec)
+    except Exception:
+        if writes:                                # the pending record still covers
+            try:                                  # the old values: put them back
+                config.set_keys(mid, {k: sec.get(k) for k in writes}, path=ini)
+            except Exception:
+                pass
+        raise
     _reload_preset(mid)                           # unloads first when it's running
     pool = _slots_on()
     before = None if pool else _el_gpus()         # not the gated look: a grow to the

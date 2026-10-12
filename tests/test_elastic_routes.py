@@ -171,6 +171,42 @@ class SwapTest(TempConfig):
         self.assertEqual(config.read_sections()["big"]["n-gpu-layers"], "99")
         self.assertEqual(config.load()["elastic_placed"], {})
 
+    def test_a_record_that_fails_after_the_write_puts_the_ini_back(self):
+        # 99 -> 48, then 48 -> 32 where saving the new record fails after the
+        # ini got 32: the ini goes back to 48 (what the record still says),
+        # and the way back to the top still finds the user's 99.
+        import routes
+        self.run_swap(STEP48)
+        real, n = routes._el_record, []
+
+        def flaky(mid, rec):
+            n.append(rec)
+            if len(n) == 2:                       # pending lands, the final one fails
+                raise OSError("config.json locked")
+            return real(mid, rec)
+        with mock.patch.object(routes, "_el_record", flaky):
+            with self.assertRaises(OSError):
+                self.run_swap(STEP32)
+        self.assertEqual(config.read_sections()["big"]["n-gpu-layers"], "48")
+        self.run_swap(TOP)
+        self.assertEqual(config.read_sections()["big"]["n-gpu-layers"], "99")
+        self.assertEqual(config.load()["elastic_placed"], {})
+
+    def test_a_failed_record_after_adding_a_key_removes_it_again(self):
+        import routes
+        write_ini(self.ini, "")                   # no n-gpu-layers of the user's
+        real, n = routes._el_record, []
+
+        def flaky(mid, rec):
+            n.append(rec)
+            if len(n) == 2:
+                raise OSError("config.json locked")
+            return real(mid, rec)
+        with mock.patch.object(routes, "_el_record", flaky):
+            with self.assertRaises(OSError):
+                self.run_swap(STEP48)
+        self.assertNotIn("n-gpu-layers", config.read_sections()["big"])
+
     def test_a_reload_that_dies_after_the_write_is_still_undoable(self):
         import routes
         with mock.patch.object(routes, "_reload_preset", side_effect=OSError("router went away")):
