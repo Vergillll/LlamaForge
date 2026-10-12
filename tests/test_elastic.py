@@ -685,5 +685,117 @@ class RobustnessTest(unittest.TestCase):
         self.assertEqual((m["at"], m["steps"], m["full"]), (1, len(LADDER), "64/64"))
 
 
+GROW_TICKS = elastic.GROW_HITS + 5
+
+
+def tight(io, fp0, others=300):
+    """A model whose own size leaves only a little free on a 16 GiB GPU."""
+    io.others = others
+    io.fps["big"] = [{0: fp0}, {0: 10 * GiB}, {0: 6 * GiB}, {0: 1 * GiB}]
+
+
+FULL = 16 * GiB - 300 - 212          # leaves 212 MiB free next to 300 MiB of other apps
+
+
+class NoReasonTest(unittest.TestCase):
+    """A model that nearly fills the GPU is not shrunk unless other apps grew,
+    and comes back to what the user had once they leave."""
+    def watched_before_load(self, fp0=FULL):
+        io = FakeIO(); tight(io, fp0)
+        loaded, io.at = io.at, {}
+        el, c, clock = controller(io)
+        el.tick()                                               # calm: nothing loaded yet
+        io.at = loaded                                          # the user loads it
+        return io, el, c, clock
+
+    def squeeze_and_release(self, io, el, clock, app=3 * GiB):
+        io.others += app
+        el.tick(); el.tick()
+        self.assertEqual(swaps(io), [("swap", "big", 1)])       # a real squeeze still shrinks
+        io.calls.clear()
+        io.others -= app
+        for _ in range(GROW_TICKS):
+            clock.t += 30
+            el.tick()
+
+    def test_a_full_model_alone_is_left_alone(self):
+        io, el, _, clock = self.watched_before_load()
+        for _ in range(20):
+            clock.t += 5
+            el.tick()
+        self.assertEqual(swaps(io), [])
+        self.assertEqual(el.status()["models"][0]["at"], 0)
+
+    def test_a_full_model_comes_back_after_a_real_squeeze_and_stays(self):
+        io, el, _, clock = self.watched_before_load()
+        for _ in range(3):
+            el.tick()                                           # full, nobody else grew
+        self.squeeze_and_release(io, el, clock)
+        self.assertEqual(swaps(io), [("swap", "big", 0)])
+        io.calls.clear()
+        for _ in range(40):                                     # no shrink, grow, shrink
+            clock.t += 5
+            el.tick()
+        self.assertEqual(swaps(io), [])
+
+    def test_the_room_the_user_had_is_enough_to_grow_back(self):
+        # 2.08 GB free at full size: less than headroom + the 1 GiB grow margin
+        io = FakeIO(); tight(io, 16 * GiB - 300 - 2130)
+        el, _, clock = controller(io)
+        el.tick()                                               # calm, with the model loaded
+        self.squeeze_and_release(io, el, clock)
+        self.assertEqual(swaps(io), [("swap", "big", 0)])
+
+    def test_grow_now_and_turning_off_need_only_the_room_the_user_had(self):
+        for how in ("now", "off"):
+            io, el, c, clock = self.watched_before_load()
+            el.tick()
+            io.others += 3 * GiB
+            el.tick(); el.tick()
+            io.calls.clear()
+            io.others -= 3 * GiB
+            clock.t += 200
+            if how == "now":
+                self.assertEqual(el.grow_now("big"), {"ok": True, "to": "64/64"})
+            else:
+                c["elastic_vram"] = False
+                el.tick()
+            self.assertEqual(swaps(io), [("swap", "big", 0)], how)
+
+    def test_pressure_without_growth_does_not_count_toward_a_shrink(self):
+        io, el, _, _ = self.watched_before_load()
+        el.tick()                                               # pressure, others unchanged
+        io.others += 3 * GiB
+        el.tick()                                               # first sighting of growth
+        self.assertEqual(swaps(io), [])
+        el.tick()
+        self.assertEqual(swaps(io), [("swap", "big", 1)])
+
+    def test_noise_below_the_floor_is_not_growth(self):
+        io, el, _, _ = self.watched_before_load()
+        io.others += elastic.GROWTH_MIN_MIB
+        for _ in range(5):
+            el.tick()
+        self.assertEqual(swaps(io), [])
+
+    def test_middle_steps_keep_the_margin(self):
+        # only step 0 is relaxed: a grow that can't reach it needs the full
+        # headroom + margin for a middle step
+        io = FakeIO()
+        io.others = 300
+        io.fps["big"] = [{0: 16 * GiB - 300 - 2130}, {0: 12 * GiB}, {0: 8 * GiB}, {0: 1 * GiB}]
+        el, _, clock = controller(io)
+        el.tick()
+        io.others += 8 * GiB                                    # down to step 3
+        el.tick(); el.tick()
+        self.assertEqual(swaps(io), [("swap", "big", 3)])
+        io.calls.clear()
+        io.others = 2200                 # step 1 would leave 1.85 GiB: not head + margin
+        for _ in range(GROW_TICKS):
+            clock.t += 30
+            el.tick()
+        self.assertEqual(swaps(io), [("swap", "big", 2)])
+
+
 if __name__ == "__main__":
     unittest.main()
