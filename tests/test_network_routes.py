@@ -102,7 +102,7 @@ class PostNetworkRouteTest(unittest.TestCase):
             events.append("save")
             return dict(current, **changes)
 
-        def restart(*args):
+        def restart(*args, **kwargs):
             events.append("restart")
             return True, ""
 
@@ -254,7 +254,7 @@ class PostNetworkRouteTest(unittest.TestCase):
             state.update(changes)
             return dict(state)
 
-        def restart(*args):
+        def restart(*args, **kwargs):
             restart_keys.append(args[4])
             if len(restart_keys) == 1:
                 first_restart_entered.set()

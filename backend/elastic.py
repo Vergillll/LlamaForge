@@ -20,6 +20,7 @@ COOLDOWN_MAX_S = 1800
 THRASH_WINDOW_S = 300      # a shrink this soon after a grow doubles the cooldown
 CALM_RESET_S = 3600        # an hour without changes resets it
 STILL_BUSY = 0.8           # no grow while others hold >= 80 % of what they had at the shrink
+GROWTH_MIN_MIB = 256       # other apps must grow by more than this before we shrink for them
 
 
 def _int(v):
@@ -156,6 +157,8 @@ class Elastic:
         self._order = []                 # shrunk models, oldest first: grow back newest first
         self._others_at = {}             # mid -> (MiB other apps used when it shrank, calm baseline)
         self._calm_others = None         # MiB other apps used on the last tick without pressure
+        self._calm_free = None           # {gpu: free MiB} on the last tick other apps hadn't grown
+        self._room = {}                  # mid -> {gpu: free MiB} the user had at its own step
         self._failed_at = {}             # mid -> when a move of it last failed outright
         self._events = collections.deque(maxlen=20)
         self._thread = None
@@ -172,53 +175,54 @@ class Elastic:
                 self._io.tidy()
             except Exception as e:
                 _warn("tidy failed", e)
+            if not enabled or standby:   # turning it on again takes a fresh first look
+                self._calm_others = self._calm_free = None
             if not enabled:
                 self._shrink_hits = self._grow_hits = 0
-                snap = self._io.snapshot()
+                snap, models, others = self._look(waiting=True)
                 if not snap:
                     return
                 head = int(c.get("elastic_headroom_mib", 1536))
-                models = [m for m in self._io.models(list(snap)) if m["steps"]]
-                others = self._others_of(snap, models)
                 self._forgive(models)
-                waiting = [m["id"] for m in models if m["at"] > 0]
-                with self._lock:
-                    self._models, self._others, self._waiting = models, others, waiting
                 if self._last_change is not None and self._clock() - self._last_change < self._cooldown:
                     return               # backs off like a grow: a failed load doubles it
                 for m in models:         # turned off while shrunk: one model per tick, only
-                    if m["at"] > 0 and choose(           # when its own step fits again
-                            m["fps"], self._budget(snap, others, models, m, head), 0) == 0:
-                        ev = self._move(c, m, 0, "Elastic VRAM was turned off")
-                        if ev["ok"] and ev["to"] == label(m["steps"][0]):
-                            with self._lock:
-                                self._waiting = [w for w in waiting if w != m["id"]]
+                    if m["at"] > 0 and self._grow_to(    # when its own step fits again
+                            snap, others, models, m, head) == 0:
+                        self._move(c, m, 0, "Elastic VRAM was turned off")
+                        self._relook(snap, waiting=True)
                         break
                 return
             if standby:                  # Game mode unloads everything anyway
                 self._shrink_hits = self._grow_hits = 0
+                self._show([], {}, [])
                 return
-            snap = self._io.snapshot()
+            snap, models, others = self._look(waiting=False)
             if not snap:
                 return
-            models = [m for m in self._io.models(list(snap)) if m["steps"]]
-            others = self._others_of(snap, models)
             self._forgive(models)
-            with self._lock:
-                self._models, self._others, self._waiting = models, others, []
             now = self._clock()
             if self._last_change is not None and now - self._last_change >= CALM_RESET_S:
                 self._cooldown = COOLDOWN_S
             head = int(c.get("elastic_headroom_mib", 1536))
-            if any(s["total"] - s["used"] < head / 2 for s in snap.values()):
+            total = sum(others.values())
+            free = {g: s["total"] - s["used"] for g, s in snap.items()}
+            if any(v < head / 2 for v in free.values()):
                 self._grow_hits = 0
+                if self._calm_others is None:    # the first look (just turned on, or the panel
+                    self._calm_others = total    # restarted): what's here is the baseline,
+                if total <= self._calm_others + GROWTH_MIN_MIB:   # not a squeeze
+                    self._shrink_hits = 0    # full of our own models: nobody needs the room
+                    self._calm_free = free
+                    return
                 self._shrink_hits += 1
                 if self._shrink_hits >= SHRINK_HITS:
                     self._shrink_hits = 0
-                    self._shrink(c, snap, others, models, head)
+                    if self._shrink(c, snap, others, models, head):
+                        self._relook(snap, waiting=False)
                 return
             self._shrink_hits = 0
-            self._calm_others = sum(others.values())
+            self._calm_others, self._calm_free = total, free
             pick = self._grow_pick(snap, others, models, head) if c.get("elastic_grow", True) else None
             if pick is None:
                 self._grow_hits = 0
@@ -228,6 +232,36 @@ class Elastic:
                     self._last_change is None or now - self._last_change >= self._cooldown):
                 self._grow_hits = 0
                 self._move(c, pick[0], pick[1], "other apps freed VRAM")
+                self._relook(snap, waiting=False)
+
+    def _show(self, models, others, waiting):
+        with self._lock:
+            self._models, self._others, self._waiting = models, others, waiting
+
+    def _look(self, waiting):
+        """One snapshot and the resizable models on it, shown by status() (with
+        the resized ones as `waiting` while Elastic is off). Nothing to see, or
+        a look that fails, clears what status() shows."""
+        try:
+            snap = self._io.snapshot()
+            models = [m for m in self._io.models(list(snap)) if m["steps"]] if snap else []
+        except Exception:
+            self._show([], {}, [])
+            raise
+        others = self._others_of(snap, models) if snap else {}
+        self._show(models, others, [m["id"] for m in models if m["at"] > 0] if waiting else [])
+        return snap, models, others
+
+    def _relook(self, snap, waiting):
+        """After a move: the models where they are now (other apps as last seen)."""
+        try:
+            models = [m for m in self._io.models(list(snap)) if m["steps"]]
+        except Exception as e:
+            _warn("reading models after a resize failed", e)
+            models = []
+        with self._lock:
+            self._models = models
+            self._waiting = [m["id"] for m in models if m["at"] > 0] if waiting else []
 
     def _forgive(self, models):
         """A model that is loaded at its own settings again (the user reloaded
@@ -250,9 +284,25 @@ class Elastic:
     @staticmethod
     def _budget(snap, others, models, m, head):
         """What m may use on each GPU: the total, less other apps, the
-        headroom and the other models where they are now."""
+        headroom (one figure, or {gpu: MiB}) and the other models where they
+        are now."""
+        heads = head if isinstance(head, dict) else {g: head for g in snap}
         rest = _sum(o["fps"][o["at"]] for o in models if o["id"] != m["id"])
-        return {g: s["total"] - others.get(g, 0) - head - rest.get(g, 0) for g, s in snap.items()}
+        return {g: s["total"] - others.get(g, 0) - heads[g] - rest.get(g, 0)
+                for g, s in snap.items()}
+
+    def _grow_to(self, snap, others, models, m, head):
+        """The largest step m fits at with `head` left free. Its own step 0
+        needs no more free than the user had there before the squeeze (a
+        model that nearly fills the GPU never had head + margin). The room
+        comes back with the model's record after a panel restart."""
+        room = self._room.get(m["id"]) or m.get("room")
+        if room:
+            h0 = {g: head if room.get(g) is None else min(head, max(0, room[g] - GROWTH_MIN_MIB))
+                  for g in snap}
+            if choose(m["fps"][:1], self._budget(snap, others, models, m, h0)) == 0:
+                return 0
+        return choose(m["fps"], self._budget(snap, others, models, m, head), 0)
 
     def _shrink(self, c, snap, others, models, head):
         best = None
@@ -269,15 +319,18 @@ class Elastic:
             if freed > 0 and (best is None or freed > best[2]):
                 best = (m, j, freed)
         if best is None:
-            return
+            return False
         m, j, _ = best
         if self._last_grow is not None and self._clock() - self._last_grow < THRASH_WINDOW_S:
             self._cooldown = min(self._cooldown * 2, COOLDOWN_MAX_S)
         total = sum(others.values())
         self._others_at[m["id"]] = (total, self._calm_others or 0)
+        if m["at"] == 0 and self._calm_free:
+            self._room[m["id"]] = dict(self._calm_free)
         if m["id"] not in self._order:
             self._order.append(m["id"])
         self._move(c, m, j, f"other apps use {total / 1024:.1f} GB")
+        return True
 
     def _grow_pick(self, snap, others, models, head):
         by_id = {m["id"]: m for m in models}
@@ -289,13 +342,12 @@ class Elastic:
             at_shrink, base = self._others_at.get(mid, (float("inf"), 0))
             if at_shrink > base and total - base >= STILL_BUSY * (at_shrink - base):
                 continue
-            b = self._budget(snap, others, models, m, head + GROW_MARGIN_MIB)
-            j = choose(m["fps"], b, 0)
+            j = self._grow_to(snap, others, models, m, head + GROW_MARGIN_MIB)
             if j is not None and j < m["at"]:
                 return m, j
         for m in models:                 # shrunk before a panel restart: no history
             if m["at"] > 0 and m["id"] not in self._order:
-                j = choose(m["fps"], self._budget(snap, others, models, m, head + GROW_MARGIN_MIB), 0)
+                j = self._grow_to(snap, others, models, m, head + GROW_MARGIN_MIB)
                 if j is not None and j < m["at"]:
                     return m, j
         return None
@@ -321,7 +373,7 @@ class Elastic:
                     notes.append(f"conversation not kept: {type(e).__name__}: {e}")
             for i in range(j, len(steps)):
                 try:
-                    err = self._io.swap(mid, steps[i])
+                    err = self._io.swap(mid, steps[i], self._room.get(mid))
                 except Exception as e:
                     err = f"{type(e).__name__}: {e}"
                 if not err:
@@ -362,6 +414,7 @@ class Elastic:
             if mid in self._order:
                 self._order.remove(mid)
             self._others_at.pop(mid, None)
+            self._room.pop(mid, None)
         return self._log(mid, label(steps[frm]), "unloaded" if at is None else label(steps[at]),
                          reason, now - t0, at is not None, kept, "; ".join(notes))
 
@@ -381,16 +434,20 @@ class Elastic:
             models = [m for m in self._io.models(list(snap)) if m["steps"]]
             m = next((x for x in models if x["id"] == mid), None)
             if not m or m["at"] == 0:
-                return {"ok": False, "error": f"{mid} isn't resized"}
+                note = f"{mid} isn't resized any more"
+                here = label(m["steps"][0]) if m else ""
+                self._log(mid, here, here, "you asked", 0, False, None, note)
+                return {"ok": False, "error": note}
             others = self._others_of(snap, models)
             head = int(c.get("elastic_headroom_mib", 1536))
-            j = choose(m["fps"], self._budget(snap, others, models, m, head), 0)
+            j = self._grow_to(snap, others, models, m, head)
             if j is None or j >= m["at"]:
                 note = "other apps still use the VRAM it needs"
                 here = label(m["steps"][m["at"]])
                 self._log(mid, here, here, "you asked", 0, False, None, note)
                 return {"ok": False, "error": note}
             ev = self._move(c, m, j, "you asked")
+            self._relook(snap, waiting=not c.get("elastic_vram"))
             return {"ok": ev["ok"], "to": ev["to"]}
 
     def safe_grow(self, mid):

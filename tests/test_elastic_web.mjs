@@ -82,3 +82,46 @@ test("needs an NVIDIA GPU: an honest note on a Mac or without nvidia-smi", () =>
   assert.equal(el.gpuNote({platform: "windows", gpus: [{index: 0, used: 1, total: 16000}]}), "");
   assert.equal(el.gpuNote(null), "");            // state not loaded yet: say nothing
 });
+
+test("plural: one waiting model fits, several fit", () => {
+  assert.match(el.statusText({...shrunk, enabled: false, waiting: ["a"]}), /a goes back to full size once it fits$/);
+  assert.match(el.statusText({...shrunk, enabled: false, waiting: ["a", "b"]}), /a, b go back to full size once they fit$/);
+});
+
+test("with auto-grow off the status points at the dashboard chip, not an automatic grow", () => {
+  const t = el.statusText(shrunk, {grow: false});
+  assert.match(t, /dashboard chip/);
+  assert.doesNotMatch(t, /until it grows back/);
+  assert.match(el.statusText(shrunk, {grow: true}), /until it grows back/);
+  assert.match(el.statusText(shrunk), /until it grows back/);
+});
+
+test("statusWarn: something is resized or a swap is running", () => {
+  assert.equal(el.statusWarn(null), false);
+  assert.equal(el.statusWarn({models: []}), false);
+  assert.equal(el.statusWarn(shrunk), true);
+  assert.equal(el.statusWarn({swapping: "x", models: []}), true);
+});
+
+test("a model mid-swap gets a disabled 'resizing' chip, and the signature changes", () => {
+  const busy = {...shrunk, swapping: "qwen<27b>"};
+  const html = el.chip({elastic: busy}, {id: "qwen<27b>"});
+  assert.match(html, /disabled/);
+  assert.match(html, /resizing…/);
+  assert.doesNotMatch(html, /qwen<27b>/);
+  assert.notDeepEqual(el.chipSig({elastic: busy}, {id: "qwen<27b>"}),
+                      el.chipSig({elastic: shrunk}, {id: "qwen<27b>"}));
+  // a full-size model starting to shrink shows it too
+  const first = {...shrunk, swapping: "small"};
+  assert.match(el.chip({elastic: first}, {id: "small"}), /resizing…/);
+  assert.notEqual(el.chipSig({elastic: first}, {id: "small"}), "");
+});
+
+test("a label without the gpu/layers prefix falls back to the layer count", () => {
+  const odd = {...shrunk, models: [{id: "m", at: 1, gpu_layers: 30, layers: 60, label: "odd<label>", steps: 3, full: "60/60"}]};
+  assert.match(el.chip({elastic: odd}, {id: "m"}), /Elastic · 30\/60 on GPU</);
+  assert.doesNotMatch(el.chip({elastic: odd}, {id: "m"}), /odd/);
+  assert.match(el.statusText(odd), /^m: 30\/60 layers on GPU \(/);
+  const none = {...odd, models: [{...odd.models[0], label: undefined}]};
+  assert.match(el.chip({elastic: none}, {id: "m"}), /Elastic · 30\/60 on GPU</);
+});

@@ -584,17 +584,43 @@ function elasticMarkup() {
       <div class="kv"><label class="k" for="el-grow">grow back automatically</label><span class="v">${box("el-grow", c.elastic_grow !== false)}</span></div>
       <div class="kv"><label class="k" for="el-keep">keep conversations across resizes</label><span class="v">${box("el-keep", c.elastic_keep_conversation !== false)}</span></div>
       <div class="kv"><label class="k" for="el-head">VRAM to keep free per GPU (GB)</label><span class="v"><input type="number" id="el-head" min="0.5" max="16" step="0.5" value="${esc(headGb)}" style="width:90px"></span></div>
-      <div class="kv"><span class="k">now</span><span class="v ${e.swapping || (e.models || []).some(m => m.at > 0) ? "warn" : ""}" id="el-status">${esc(elastic.statusText(e))}</span></div>
-      ${elastic.eventsMarkup(e)}
+      <div class="kv"><span class="k">now</span><span class="v ${elastic.statusWarn(e) ? "warn" : ""}" id="el-status">${esc(elastic.statusText(e, {grow: c.elastic_grow !== false}))}</span></div>
+      <div id="el-log">${elastic.eventsMarkup(e)}</div>
       <div class="actions"><button id="el-save">Save</button><span class="msg" id="el-msg"></span></div>
       <div class="note">It checks every 5 seconds. A model shrinks after two checks with less than half the free VRAM above, and grows back after 30 seconds with room to spare (at least 2 minutes after the last change, longer if an app keeps taking the memory back). A resized model runs much slower: a 27B went from 23 to 4 tokens/s at 40 of 64 layers. A resize reloads the model, from a few seconds for a small one to about 20 for a 27B; requests in that window wait or fail.</div>
-      <div class="note">Turning it off doesn't restore models at once: each one goes back to full size when it fits again, after the same cooldown. Not resized: models on a build of their own, ik_llama and vLLM. Context size, quant and cache type never change. Conversations are kept only on a router LlamaForge started (it adds <b>--slot-save-path</b>); the snapshot files are deleted right after each resize.</div>
+      <div class="note">Turning it off doesn't restore models at once: each one goes back to full size when it fits again, after the same cooldown. Not resized: models on a build of their own, ik_llama and vLLM. Context size, quant and cache type never change. Resizing starts at once; keeping conversations needs one router restart after turning it on (Network Access: <b>Apply &amp; Restart Router</b>), since LlamaForge gives the router a save folder (<b>--slot-save-path</b>) only while Elastic is on. The snapshot files are deleted right after each resize.</div>
     </div>`;
+}
+
+// The card is drawn from S.STATE, which only the Models tab's poll refreshes;
+// while the card is up it polls /api/elastic itself so the status line and
+// the log follow a resize. One interval per render: the generation's cleanup
+// clears it on re-render and on leaving the tab.
+function elasticLive(generation) {
+  let logSig = JSON.stringify((S.STATE && S.STATE.elastic && S.STATE.elastic.events) || []), busy = false;
+  const poll = setInterval(async () => {
+    if (busy) return;
+    if (!setupViewActive(generation) || !$("#elastic-card")) return clearInterval(poll);
+    busy = true;
+    const e = await api("/api/elastic").catch(() => null);
+    busy = false;
+    if (!setupViewActive(generation) || !e || e.error) return;
+    if (S.STATE) S.STATE.elastic = e;
+    const st = $("#el-status");
+    if (st) {
+      st.textContent = elastic.statusText(e, {grow: cfgOf().elastic_grow !== false});
+      st.classList.toggle("warn", elastic.statusWarn(e));
+    }
+    const sig = JSON.stringify(e.events || []);
+    if (sig !== logSig) { logSig = sig; setHTML($("#el-log"), elastic.eventsMarkup(e)); }
+  }, 3000);
+  registerSetupCleanup(generation, () => clearInterval(poll));
 }
 
 function wireElastic(generation) {
   const save = $("#el-save");
   if (!save) return;
+  elasticLive(generation);
   const msg = (t, c) => { const m = $("#el-msg"); if (m) { m.className = "msg " + c; m.textContent = t; } };
   save.onclick = async () => {
     const gbVal = Number($("#el-head").value);

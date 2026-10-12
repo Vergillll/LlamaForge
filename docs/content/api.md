@@ -124,6 +124,15 @@ These are the endpoints external coding agents (Claude Code, Codex, etc.) talk t
 | POST | `/api/pi/install` / `/api/pi/remove` | Start a pi install (or update) or removal job; progress comes back through `GET /api/pi/status`. `409` if a job is already running. |
 | GET | `/api/mcp/setup` | Ready-to-paste client configs for LlamaForge's [MCP server](mcp.md), with this install's Python and script paths filled in. |
 
+## Elastic VRAM
+
+See [Setup > Elastic VRAM](setup.md#elastic-vram). The settings themselves go through `POST /api/config`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/elastic` | Elastic VRAM status: `enabled`, `standby` (Game mode has a game running), `swapping` (the model being resized, or `null`), `cooldown_s` (the current wait before a grow), `waiting` (models still to go back to full size after it was turned off), `others_mib` (VRAM other apps use, per GPU), `models` (per resizable loaded model, not one still loading: `id`, `at` (0 = the user's own size), `label`, `gpu_layers`, `layers`, `steps`, `full`) and `events` (the last 20 resizes: `t`, `model`, `from`, `to`, `reason`, `secs`, `ok`, `kept`, `note`). Also in `GET /api/state` as `elastic`. |
+| POST | `/api/elastic/grow` | Grow a resized model back now: `{model}`. Skips the wait and cooldown, not the fit check. Returns `{ok: true}` at once and runs the swap in the background; the outcome lands in `events`. `400` if the model isn't resized, `409` if it's being resized right now. |
+
 ## Embers
 
 The Embers tab's endpoints. See [Embers](embers.md) for what each does.

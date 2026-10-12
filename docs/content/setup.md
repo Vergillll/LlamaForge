@@ -10,7 +10,7 @@ Check build prerequisites, install what is missing with your permission, scan yo
 
 ## What it does
 
-The Setup tab is a column of cards. The four described first (prerequisites, installing missing tools, drive scan, registry prune) each have their own backend module; the cards for [Network Access](#network-access), [Connect an Agent](#connect-an-agent), multi-model, speed estimates and vLLM follow below.
+The Setup tab is a column of cards. The four described first (prerequisites, installing missing tools, drive scan, registry prune) each have their own backend module; the cards for [Network Access](#network-access), [Connect an Agent](#connect-an-agent), [Game mode](#game-mode), [Elastic VRAM](#elastic-vram), multi-model, speed estimates and vLLM follow below.
 
 **Prerequisite detection.** `backend/prereqs.py` checks for four command-line tools — `git`, `cmake`, `ninja`, and `python` (via `shutil.which`, running `--version` to confirm and capture the installed version) — plus the platform C++ compiler and the CUDA toolkit. On Windows, the compiler check (`find_msvc()`) shells out to `vswhere.exe` to locate an MSVC install with the C++ desktop workload, falling back to a glob for `cl.exe` under `Program Files\Microsoft Visual Studio`. On macOS/Linux it looks for `clang++` or `g++` on `PATH`. CUDA detection reads `nvcc --version` (or `$CUDA_PATH`) and is skipped entirely on macOS, where Metal is used instead.
 
@@ -53,12 +53,34 @@ Tick **unload models while a game is running** and LlamaForge frees your GPU whe
 - **Load them again when the game closes** is on by default; untick it to leave the GPU empty afterwards.
 - Turning Game mode off mid-game brings the models back right away. The **now** line shows the detected game and how many models it unloaded.
 
+## Elastic VRAM
+
+New and not yet tested on many machines: treat it as an early preview. Off by default.
+
+When another app (a game, Blender, ComfyUI, a video editor) needs your GPU, Elastic VRAM moves a loaded model's layers to the CPU instead of unloading it, and moves them back when the app is done. The conversation can be kept: LlamaForge saves the model's slot state before the resize and restores it after, so the next message doesn't re-read the whole chat.
+
+- **When it shrinks:** it checks every 5 seconds. A model shrinks after two checks in a row with less than half the **VRAM to keep free per GPU** left on a GPU, and only if other apps use more of it than before: a model that fills the GPU on its own is left alone. "Before" starts with its first check after you turn it on (or after LlamaForge restarts), so an app that is already squeezing the GPU then only causes a shrink once it grows further. In multi-model mode, a model that is still loading counts as other apps' memory until it has loaded.
+- **When it grows back:** after 30 seconds (six checks) in which the model fits at a bigger size with the VRAM to keep free plus 1 GB to spare (back at your own settings, the free memory you had there before is enough), and at least 2 minutes after the last change. If an app takes the memory back within 5 minutes of a grow, that wait doubles, up to 30 minutes; an hour without changes resets it to 2 minutes. It also holds off while the apps that caused the shrink still use most of what they used then.
+- **What it changes:** MoE models move their experts to the CPU first (`n-cpu-moe`, a quarter of the layers at a time), then whole layers (`n-gpu-layers`); other models move layers only, a quarter at a time. A model never goes above the GPU layers you set. Context size, quant and cache type never change.
+- **A resized model is much slower.** One real measurement: a 27B ran at 23 tokens/s fully on the GPU and 4 tokens/s at 40 of 64 layers. The dashboard shows **Elastic · 40/64 on GPU** on its row; click it to grow it back now, if it fits.
+- **A resize reloads the model:** a few seconds for a small one, about 20 for a 27B. A request that arrives meanwhile waits or fails.
+- **Your settings win.** It only edits the llama.cpp `models.ini`, records exactly which keys it wrote and what they replaced (`elastic_placed`, along with the free memory you had at your own settings, so a resized model still grows back after LlamaForge restarts), and takes them out again when the model grows back. A key you edit by hand in the meantime is yours: it is neither overwritten nor reverted. A resized model that gets unloaded gets your values back.
+- **Turning it off isn't instant.** Each resized model goes back to full size once it fits again, after the same wait. The **now** line lists the models still waiting.
+- **Grow back automatically** is on by default. Untick it and a resized model stays small until you click its dashboard chip.
+- **Game mode comes first.** While Game mode is on and a game is running, Elastic VRAM stands by.
+- **Turning it on takes effect at once**, but **keeping the conversation** needs one router restart afterwards (Network Access: **Apply & Restart Router**, keeping the key as it is). LlamaForge gives the router a save folder (`--slot-save-path`) only when it starts it while Elastic VRAM and keeping conversations are both on, and the binary has the flag; toggling them never restarts the router by itself, since that would unload the model it's protecting. The files go in a `slot-saves` folder beside `logs`, are deleted right after each resize, and any left by a crash are removed at startup. Until the restart, or on a router started some other way (the run script), the model is still resized, but the conversation isn't kept, and the log says so.
+- **Where it works:** NVIDIA GPUs only, since it reads free memory from `nvidia-smi`. On a Mac, or without an NVIDIA GPU, the card says so and the setting does nothing. Only llama.cpp router models are resized: not models pinned to a build of their own, ik_llama or vLLM.
+
+The card shows the current state on its **now** line and a log of the last 20 resizes: when, which model, from and to which size, why, how long it took and whether the conversation was kept.
+
 ## Network Access
 
 The Network Access card controls the llama.cpp router, never the dashboard: the
 panel and management API stay on `127.0.0.1`. Choose **This computer only** for
 the router's `127.0.0.1` scope or **Devices on my local network** for its
 `0.0.0.0` scope. LAN selection requires a usable key before Apply is enabled.
+While [Elastic VRAM](#elastic-vram) keeps conversations, the router has a slot save
+folder, so anyone holding the router API key can also use its slot save and restore.
 
 Choose one unambiguous key action: **Keep the configured key**, **Generate a new strong key**,
 **Replace with a key I provide**, or **Remove the key (local-only)**. Remove is available only with local access; moving

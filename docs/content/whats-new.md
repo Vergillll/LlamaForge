@@ -8,6 +8,10 @@ order: 1
 
 This page summarizes the most recent additions to LlamaForge. Each entry links to the full reference for that capability. For the longer-term direction, see the project's `ROADMAP.md`.
 
+## Unreleased: Elastic VRAM
+
+- **Elastic VRAM.** When another app needs your GPU, LlamaForge moves a loaded model's layers to the CPU instead of unloading it (MoE experts first), keeps the conversation through llama.cpp's slot save and restore (after one router restart; the router gets a save folder only while Elastic is on), and moves the layers back once the memory is free. A resized model is much slower, and the dashboard row says so; click its chip to grow it back. NVIDIA only, off by default, and new: not yet tested on many machines. See [Setup > Elastic VRAM](setup.md#elastic-vram). API: `/api/elastic`, `/api/elastic/grow`.
+
 ## v0.16.3: Game mode
 
 - **Game mode.** Start a game and LlamaForge unloads your models; quit it and they load again. Games are recognised by their Steam, Epic, GOG, Xbox, Riot, EA or Ubisoft folder, by names you add, or (Windows) by exclusive full screen. Pick models to keep loaded through it. Off by default. See [Setup](setup.md#game-mode).

@@ -251,12 +251,20 @@ def _gpu_telemetry():
             creationflags=router_ctl.CREATE_NO_WINDOW if osplat.IS_WIN else 0)
     except Exception as e:
         return [{"error": str(e)}]
+    def num(v):
+        try:
+            return int(v)
+        except ValueError:            # "[N/A]" on cards that don't report it
+            return None
     res = []
     for ln in out.strip().splitlines():
         f = [x.strip() for x in ln.split(",")]
         if len(f) >= 6:
-            res.append({"index": int(f[0]), "name": f[1], "used": int(f[2]),
-                        "total": int(f[3]), "util": int(f[4]), "temp": int(f[5])})
+            index, used, total = num(f[0]), num(f[2]), num(f[3])
+            if None in (index, used, total):
+                continue              # a GPU without memory figures tells us nothing
+            res.append({"index": index, "name": f[1], "used": used,
+                        "total": total, "util": num(f[4]), "temp": num(f[5])})
     return res
 
 
@@ -1358,11 +1366,11 @@ def post_unload(req):
     return (200 if code == 200 else 400), res
 
 
-def _router_loaded_ids():
+def _router_loaded_ids(states=("loaded", "loading", "sleeping")):
     st, data = router("/models")
     return [m["id"] for m in data.get("data", [])
             if st == 200 and m.get("id") != "default"
-            and m.get("status", {}).get("value") in ("loaded", "loading", "sleeping")]
+            and m.get("status", {}).get("value") in states]
 
 
 def post_unload_all(req):
@@ -2083,7 +2091,8 @@ def _sync_router_pool(c):
     ok, err = router_ctl.restart(sbin, config.ini_path(), c["router_port"],
                                  c.get("router_host", "127.0.0.1"),
                                  c.get("router_api_key", ""), LOGDIR,
-                                 c.get("router_local_key", ""), want)
+                                 c.get("router_local_key", ""), want,
+                                 slot_save=_el_slot_save(c))
     return bool(ok), err
 
 
@@ -2122,7 +2131,8 @@ def reconcile_router_auth():
         ok, err = router_ctl.restart(sbin, config.ini_path(), c["router_port"],
                                      c.get("router_host", "127.0.0.1"),
                                      c.get("router_api_key", ""), LOGDIR,
-                                     c.get("router_local_key", ""), _router_pool(c, sbin))
+                                     c.get("router_local_key", ""), _router_pool(c, sbin),
+                                     slot_save=_el_slot_save(c))
     print("  router restarted with API-key auth" if ok
           else f"  WARNING: router auth restart failed ({err})")
     return True
@@ -2176,7 +2186,8 @@ def _post_network_locked(req):
         ok, error = router_ctl.restart(
             sbin, config.ini_path(), c["router_port"],
             mutation.router_host, mutation.router_api_key, LOGDIR,
-            c.get("router_local_key", ""), _router_pool(c, sbin))
+            c.get("router_local_key", ""), _router_pool(c, sbin),
+            slot_save=_el_slot_save(c))
     except Exception as exc:
         ok, error = False, exc
     running = router_ctl.is_running(c["router_port"])
@@ -2226,7 +2237,8 @@ def _post_engine_switch_locked(req):
     ok, err = router_ctl.restart(sbin, config.ini_path(), c["router_port"],
                                  c.get("router_host", "127.0.0.1"),
                                  c.get("router_api_key", ""), LOGDIR,
-                                 c.get("router_local_key", ""), _router_pool(c, sbin))
+                                 c.get("router_local_key", ""), _router_pool(c, sbin),
+                                 slot_save=_el_slot_save(c))
     return 200, {"ok": ok, "active_engine": engine, "error": err}
 
 
@@ -2388,7 +2400,8 @@ def _activate_prebuilt(sbin):
             ok, err = router_ctl.restart(sbin, config.ini_path(), c["router_port"],
                                          c.get("router_host", "127.0.0.1"),
                                          c.get("router_api_key", ""), LOGDIR,
-                                         c.get("router_local_key", ""), _router_pool(c, sbin))
+                                         c.get("router_local_key", ""), _router_pool(c, sbin),
+                                         slot_save=_el_slot_save(c))
         except Exception as e:
             ok, err = False, str(e)
         return ok, err
@@ -2770,6 +2783,13 @@ ELASTIC_DIR = router_ctl.slot_save_dir(LOGDIR)
 _EL_LAYOUTS = {}
 
 
+def _el_slot_save(c):
+    """Whether the router gets a slot save folder: only while Elastic VRAM is
+    on and keeps conversations. Read when the router (re)starts; toggling
+    either never restarts it (that would unload the model being kept)."""
+    return bool(c.get("elastic_vram") and c.get("elastic_keep_conversation", True))
+
+
 def _el_layout(path):
     """gguf.layout(path), read again only when the file changes: a tick comes
     every 5 s and a big model has thousands of tensors."""
@@ -2821,7 +2841,29 @@ def _el_pending(old, new):
         if k not in keys:
             keys[k] = v
             was[k] = (new.get("was") or {}).get(k)
-    return {"keys": keys, "was": was} if keys else None
+    return _el_with_room({"keys": keys, "was": was}, old.get("room")) if keys else None
+
+
+def _el_with_room(rec, room):
+    """rec plus the free MiB per GPU the model had at the user's own settings
+    before its first shrink (the controller grows back to that). It lives
+    under the record's "room", which plan_keys never reads as an ini key, so
+    it goes exactly when the record goes: back at the top, give-up, tidy."""
+    if rec and room:
+        rec["room"] = {str(g): int(v) for g, v in room.items()}
+    return rec
+
+
+def _el_room(rec):
+    """A record's room with the GPU ids the snapshot uses (JSON made them
+    strings), or None."""
+    room = (rec or {}).get("room")
+    if not isinstance(room, dict) or not room:
+        return None
+    try:
+        return {int(g) if str(g).isdigit() else g: int(v) for g, v in room.items()}
+    except (TypeError, ValueError):
+        return None
 
 
 def _el_spelt(section, keys):
@@ -2888,7 +2930,7 @@ def _el_models(gpus):
     secs = config.read_sections(_el_ini())
     build = SLOTS.build_id(_active_server_bin(c))
     out = []
-    for mid in _router_loaded_ids():
+    for mid in _router_loaded_ids(("loaded", "sleeping")):   # not one still loading
         if PROCS.has(mid) or mid not in secs:
             continue
         rec = placed.get(mid)
@@ -2903,7 +2945,7 @@ def _el_models(gpus):
             measured.append(_el_measured(SLOTS.store.measured(footprint.key(mid, build, s)), gpus))
             predicted.append(int(footprint.predict(s, lay)["need_mib"]))
         out.append({"id": mid, "steps": steps, "at": _el_at(secs.get(mid) or {}, rec, steps),
-                    "fps": elastic.footprints(measured, predicted, gpus)})
+                    "fps": elastic.footprints(measured, predicted, gpus), "room": _el_room(rec)})
     return out
 
 
@@ -2938,9 +2980,10 @@ def _el_save(mid):
     return {"files": files, "note": "; ".join(notes)}
 
 
-def _el_swap(mid, step):
+def _el_swap(mid, step, room=None):
     """Move mid to `step`: write the keys (recorded so they can be put back; a
-    user edit wins), reload the preset, load. "" on success, else why not. On
+    user edit wins, along with `room`, else the room already recorded), reload
+    the preset, load. "" on success, else why not. On
     a single-model router, measure the step's footprint around the load - the
     pool's slot manager records its own.
 
@@ -2956,6 +2999,7 @@ def _el_swap(mid, step):
     old = _el_placed().get(mid)
     sec = config.read_sections(ini, raw=True).get(mid) or {}
     writes, rec = elastic.plan_keys(sec, old, step["keys"])
+    rec = _el_with_room(rec, room or (old or {}).get("room"))
     if writes:
         _el_record(mid, _el_pending(old, rec))
         try:
@@ -3070,7 +3114,7 @@ class _ElasticIO:
     def game_active(self):        return bool(GAMEMODE.status().get("active"))
     def tidy(self):               return _el_tidy()
     def save(self, mid):          return _el_save(mid)
-    def swap(self, mid, step):    return _el_swap(mid, step)
+    def swap(self, mid, step, room=None): return _el_swap(mid, step, room)
     def restore(self, mid, h):    return _el_restore(mid, h)
     def drop(self, h):            return _el_drop(h)
     def giveup(self, mid):        return _el_giveup(mid)

@@ -101,7 +101,7 @@ class RouterRestartPreflightTest(unittest.TestCase):
                 side_effect=lambda port: events.append("stop") or True), \
              mock.patch.object(
                 router_ctl, "start",
-                side_effect=lambda *args: events.append("start") or (True, "")):
+                side_effect=lambda *args, **kw: events.append("start") or (True, "")):
             ok, error = router_ctl.restart(
                 "server", "models.ini", 8080, "0.0.0.0", key, "logs")
         self.assertTrue(ok, error)
