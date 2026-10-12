@@ -9,6 +9,8 @@ import collections
 import threading
 import time
 
+from footprint import _ALIASES, _flag, _norm
+
 SHRINK_HITS = 2            # ticks under half the headroom before a shrink
 GROW_HITS = 6              # ticks (30 s) with room to spare before a grow
 GROW_MARGIN_MIB = 1024     # a grow must fit with this much on top of the headroom
@@ -37,10 +39,10 @@ def ladder(settings, layout):
     n = _int(kv.get("block_count")) or 0
     if n <= 0:
         return []
-    s = {str(k).strip().lower(): v for k, v in (settings or {}).items()}
-    user_ngl = _int(s.get("n-gpu-layers", s.get("ngl")))
+    s = _norm(settings)
+    user_ngl = _int(s.get("n-gpu-layers"))
     top = n if user_ngl is None or user_ngl < 0 else min(user_ngl, n)
-    moe = (_int(kv.get("expert_count")) or 0) > 0 and "cpu-moe" not in s
+    moe = (_int(kv.get("expert_count")) or 0) > 0 and not _flag(s, "cpu-moe")
     cpu_moe = (_int(s.get("n-cpu-moe")) or 0) if moe else 0
     steps = [{"keys": {}, "gpu_layers": top, "cpu_moe": cpu_moe, "layers": n}]
     if moe:
@@ -69,17 +71,19 @@ def footprints(measured, predicted, gpus):
     is scaled from one that was (fewer layers shrink every GPU alike); with
     nothing measured the prediction is split evenly over `gpus`, the way
     llama.cpp spreads layers by default."""
+    def pred(i):
+        return (predicted[i] if i < len(predicted) else 0) or 0
     ref = next((i for i, m in enumerate(measured) if m), None)
     gs = list(gpus) or [0]
     out = []
     for i, m in enumerate(measured):
         if m:
             out.append(dict(m))
-        elif ref is not None and predicted[ref]:
-            k = predicted[i] / predicted[ref]
+        elif ref is not None and pred(ref):
+            k = pred(i) / pred(ref)
             out.append({g: int(v * k) for g, v in measured[ref].items()})
         else:
-            out.append({g: int(predicted[i]) // len(gs) for g in gs})
+            out.append({g: int(pred(i)) // len(gs) for g in gs})
     return out
 
 
@@ -100,6 +104,12 @@ def plan_keys(section, rec, keys):
     was edited by the user since: it's theirs, so we neither overwrite it nor
     restore it later - the slotctl `placed` rule."""
     rec = rec or {"keys": {}, "was": {}}
+    spelt = {}                           # canonical name -> the spelling the section uses
+    for sk in section:
+        n = _ALIASES.get(str(sk).lower(), str(sk).lower())
+        if n not in spelt or sk == n:
+            spelt[n] = sk
+    keys = {spelt.get(k, k): v for k, v in keys.items()}
     edited = {k for k, v in rec["keys"].items() if section.get(k) != v}
     ours = {k: v for k, v in rec["keys"].items() if k not in edited}
     was = {k: rec["was"].get(k) for k in ours}
@@ -138,7 +148,9 @@ class Elastic:
         self._last_change = self._last_grow = None
         self._cooldown = COOLDOWN_S
         self._order = []                 # shrunk models, oldest first: grow back newest first
-        self._others_at = {}             # mid -> MiB other apps used when it shrank
+        self._others_at = {}             # mid -> (MiB other apps used when it shrank, calm baseline)
+        self._calm_others = None         # MiB other apps used on the last tick without pressure
+        self._failed_at = {}             # mid -> when a move of it last failed outright
         self._events = collections.deque(maxlen=20)
         self._thread = None
 
@@ -153,9 +165,17 @@ class Elastic:
             self._io.tidy()
             if not enabled:
                 self._shrink_hits = self._grow_hits = 0
-                back = [m for m in self._io.models([]) if m["steps"] and m["at"] > 0]
-                if back:                 # turned off while shrunk: one model per tick
-                    self._move(c, back[0], 0, "Elastic VRAM was turned off")
+                snap = self._io.snapshot()
+                if not snap:
+                    return
+                head = int(c.get("elastic_headroom_mib", 1536))
+                models = [m for m in self._io.models(list(snap)) if m["steps"]]
+                others = self._others_of(snap, models)
+                for m in models:         # turned off while shrunk: one model per tick, only
+                    if m["at"] > 0 and choose(           # when its own step fits again
+                            m["fps"], self._budget(snap, others, models, m, head), 0) == 0:
+                        self._move(c, m, 0, "Elastic VRAM was turned off", stop=0)
+                        break
                 return
             if standby:                  # Game mode unloads everything anyway
                 self._shrink_hits = self._grow_hits = 0
@@ -179,6 +199,7 @@ class Elastic:
                     self._shrink(c, snap, others, models, head)
                 return
             self._shrink_hits = 0
+            self._calm_others = sum(others.values())
             pick = self._grow_pick(snap, others, models, head) if c.get("elastic_grow", True) else None
             if pick is None:
                 self._grow_hits = 0
@@ -187,7 +208,7 @@ class Elastic:
             if self._grow_hits >= GROW_HITS and (
                     self._last_change is None or now - self._last_change >= self._cooldown):
                 self._grow_hits = 0
-                self._move(c, pick[0], pick[1], "other apps freed VRAM")
+                self._move(c, pick[0], pick[1], "other apps freed VRAM", stop=pick[0]["at"])
 
     def safe_tick(self):
         try:
@@ -213,10 +234,13 @@ class Elastic:
             last = len(m["steps"]) - 1
             if m["at"] >= last:
                 continue
+            f = self._failed_at.get(m["id"])
+            if f is not None and self._clock() - f < COOLDOWN_S:
+                continue
             j = choose(m["fps"], self._budget(snap, others, models, m, head), m["at"] + 1)
             j = last if j is None else j
             freed = sum(m["fps"][m["at"]].values()) - sum(m["fps"][j].values())
-            if best is None or freed > best[2]:
+            if freed > 0 and (best is None or freed > best[2]):
                 best = (m, j, freed)
         if best is None:
             return
@@ -224,7 +248,7 @@ class Elastic:
         if self._last_grow is not None and self._clock() - self._last_grow < THRASH_WINDOW_S:
             self._cooldown = min(self._cooldown * 2, COOLDOWN_MAX_S)
         total = sum(others.values())
-        self._others_at[m["id"]] = total
+        self._others_at[m["id"]] = (total, self._calm_others or 0)
         if m["id"] not in self._order:
             self._order.append(m["id"])
         self._move(c, m, j, f"other apps use {total / 1024:.1f} GB")
@@ -236,7 +260,8 @@ class Elastic:
             m = by_id.get(mid)
             if not m or m["at"] == 0:
                 continue
-            if total >= STILL_BUSY * self._others_at.get(mid, float("inf")):
+            at_shrink, base = self._others_at.get(mid, (float("inf"), 0))
+            if at_shrink > base and total - base >= STILL_BUSY * (at_shrink - base):
                 continue
             b = self._budget(snap, others, models, m, head + GROW_MARGIN_MIB)
             j = choose(m["fps"], b, 0)
@@ -250,40 +275,64 @@ class Elastic:
         return None
 
     # -- the swap ---------------------------------------------------------
-    def _move(self, c, m, j, reason):
-        """Save the conversation, move m to step j (walking further down when a
-        load fails), restore. Gives up - user keys back, model unloaded -
-        when even the last step won't load."""
+    def _move(self, c, m, j, reason, stop=None):
+        """Save the conversation, move m to step j (walking down to step `stop`,
+        the last by default, when a load fails), restore. Gives up - user keys
+        back, model unloaded - when even `stop` will not load. Every io call may
+        raise; that becomes a note, never an escape."""
         mid, frm, steps = m["id"], m["at"], m["steps"]
+        stop = len(steps) - 1 if stop is None else stop
         with self._lock:
             self._swapping = mid
-        t0, notes, at, handle = self._clock(), [], None, None
+        t0, notes, at, handle, kept = self._clock(), [], None, None, None
         try:
             if c.get("elastic_keep_conversation", True):
-                handle = self._io.save(mid)
-                if handle and handle.get("note"):
-                    notes.append(handle["note"])
-            for i in range(j, len(steps)):
-                err = self._io.swap(mid, steps[i])
+                try:
+                    handle = self._io.save(mid)
+                    if handle and handle.get("note"):
+                        notes.append(handle["note"])
+                except Exception as e:
+                    handle = None
+                    notes.append(f"conversation not kept: {type(e).__name__}: {e}")
+            for i in range(j, stop + 1):
+                try:
+                    err = self._io.swap(mid, steps[i])
+                except Exception as e:
+                    err = f"{type(e).__name__}: {e}"
                 if not err:
                     at = i
                     break
                 notes.append(f"{label(steps[i])} didn't load: {err}")
-            kept = None
+            restored = False
             if at is None:
-                self._io.giveup(mid)
+                try:
+                    self._io.giveup(mid)
+                except Exception as e:
+                    notes.append(f"giving up {mid} failed: {type(e).__name__}: {e}")
                 notes.append(f"Elastic VRAM couldn't fit {mid}; it stays unloaded until you load it")
-                if handle:
-                    self._io.drop(handle)
             elif handle and handle.get("files"):
-                kept = bool(self._io.restore(mid, handle))
+                try:
+                    kept = bool(self._io.restore(mid, handle))   # drops its own files
+                    restored = True
+                except Exception as e:
+                    kept = False
+                    notes.append(f"conversation not restored: {type(e).__name__}: {e}")
+            if handle and not restored and (at is None or handle.get("files")):
+                try:
+                    self._io.drop(handle)
+                except Exception as e:
+                    notes.append(f"dropping saved slots failed: {type(e).__name__}: {e}")
         finally:
             with self._lock:
                 self._swapping = None
-        now = self._clock()
-        self._last_change = now
+            now = self._clock()
+            self._last_change = now
+        if at is None or at == frm:
+            self._failed_at[mid] = now
         if at is not None and at < frm:
             self._last_grow = now
+        elif j < frm:                    # a grow that ended where it began, or lower
+            self._cooldown = min(self._cooldown * 2, COOLDOWN_MAX_S)
         if at in (0, None):
             if mid in self._order:
                 self._order.remove(mid)
@@ -316,7 +365,7 @@ class Elastic:
                 here = label(m["steps"][m["at"]])
                 self._log(mid, here, here, "you asked", 0, False, None, note)
                 return {"ok": False, "error": note}
-            ev = self._move(c, m, j, "you asked")
+            ev = self._move(c, m, j, "you asked", stop=m["at"])
             return {"ok": ev["ok"], "to": ev["to"]}
 
     def safe_grow(self, mid):

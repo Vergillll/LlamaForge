@@ -340,6 +340,7 @@ class GrowTest(unittest.TestCase):
     def test_turning_it_off_grows_everything_back(self):
         io, el, c, _ = self.shrunk()
         c["elastic_vram"] = False
+        io.others = 1 * GiB              # step 0 fits again
         el.tick()
         self.assertEqual(swaps(io), [("swap", "big", 0)])
         self.assertIn("turned off", el.status()["events"][0]["reason"])
@@ -376,6 +377,183 @@ class StatusTest(unittest.TestCase):
         for i in range(25):
             el._log("big", "64/64", "48/64", "test", 0, True, None, "")
         self.assertEqual(len(el.status()["events"]), 20)
+
+
+class QuietGiveupIO(FakeIO):
+    """giveup leaves the model in the pool, as a router that failed to unload would."""
+    def giveup(self, mid):
+        self.calls.append(("giveup", mid))
+
+
+class ExceptionSafetyTest(unittest.TestCase):
+    def test_a_raising_swap_counts_as_a_failed_load(self):
+        io = QuietGiveupIO(others=4)
+
+        def boom(mid, step):
+            io.calls.append(("swap", mid, LADDER.index(step)))
+            raise OSError("boom")
+        io.swap = boom
+        el, _, _ = controller(io)
+        el.tick(); el.tick()
+        evs = el.status()["events"]
+        self.assertEqual(len(evs), 1)
+        self.assertFalse(evs[0]["ok"])
+        self.assertIn("OSError: boom", evs[0]["note"])
+        self.assertIsNotNone(el._last_change)
+        self.assertEqual(io.calls.count(("giveup", "big")), 1)
+        self.assertEqual(io.calls.count(("drop",)), 1)
+
+    def test_no_new_attempt_on_a_model_that_just_failed(self):
+        io = QuietGiveupIO(others=4); io.fail = {1, 2, 3}
+        el, _, clock = controller(io)
+        el.tick(); el.tick()
+        n = len(io.calls)
+        for _ in range(4):
+            el.tick()
+        self.assertEqual(len(io.calls), n)
+        clock.t += elastic.COOLDOWN_S + 1
+        el.tick(); el.tick()
+        self.assertGreater(len(io.calls), n)
+
+    def test_a_raising_save_still_swaps(self):
+        io = FakeIO(others=4)
+
+        def boom(mid):
+            raise OSError("disk")
+        io.save = boom
+        el, _, _ = controller(io)
+        el.tick(); el.tick()
+        self.assertEqual(swaps(io), [("swap", "big", 1)])
+        ev = el.status()["events"][0]
+        self.assertTrue(ev["ok"])
+        self.assertIn("conversation not kept: OSError: disk", ev["note"])
+
+    def test_a_raising_restore_drops_the_files(self):
+        io = FakeIO(others=4)
+
+        def boom(mid, handle):
+            raise OSError("gone")
+        io.restore = boom
+        el, _, _ = controller(io)
+        el.tick(); el.tick()
+        self.assertEqual(io.calls[-1], ("drop",))
+        ev = el.status()["events"][0]
+        self.assertTrue(ev["ok"])
+        self.assertFalse(ev["kept"])
+
+    def test_the_files_are_dropped_when_the_swap_fails_without_a_restore(self):
+        io = FakeIO(others=4); io.fail = {1, 2, 3}
+        el, _, _ = controller(io)
+        el.tick(); el.tick()
+        self.assertNotIn(("restore", "big"), io.calls)
+        self.assertEqual(io.calls.count(("drop",)), 1)
+
+
+class OffPathTest(unittest.TestCase):
+    def shrunk_off(self):
+        io = FakeIO(others=4); el, c, clock = controller(io)
+        el.tick(); el.tick()
+        io.calls.clear()
+        c["elastic_vram"] = False
+        return io, el, c
+
+    def test_off_waits_until_step_zero_fits(self):
+        io, el, _ = self.shrunk_off()
+        el.tick(); el.tick()                                    # others still at 4 GiB
+        self.assertEqual(io.calls, [])
+        io.others = 1 * GiB
+        el.tick()
+        self.assertEqual(swaps(io), [("swap", "big", 0)])
+
+    def test_off_never_walks_down_it_gives_up(self):
+        io, el, _ = self.shrunk_off()
+        io.others = 1 * GiB; io.fail = {0}
+        el.tick()
+        self.assertEqual(swaps(io), [("swap", "big", 0)])
+        self.assertEqual(io.calls.count(("giveup", "big")), 1)
+        el.tick(); el.tick()
+        self.assertEqual(swaps(io), [("swap", "big", 0)])
+
+
+class BaselineBusyTest(unittest.TestCase):
+    def test_a_big_baseline_does_not_block_the_grow(self):
+        io = FakeIO()
+        io.total = 19968
+        io.fps["big"] = [{0: 11264}, {0: 9216}, {0: 6 * GiB}, {0: 1 * GiB}]
+        io.others = 7 * GiB                                     # the baseline
+        el, _, clock = controller(io, elastic_headroom_mib=512)
+        el.tick()                                               # calm: records the baseline
+        io.others = 7 * GiB + 1536                              # a 1.5 GiB spike
+        el.tick(); el.tick()
+        self.assertEqual(swaps(io), [("swap", "big", 1)])
+        io.calls.clear()
+        io.others = 7 * GiB
+        for _ in range(6):
+            clock.t += 5
+            el.tick()
+        clock.t += 200
+        el.tick()
+        self.assertEqual(swaps(io), [("swap", "big", 0)])
+
+
+class ShrinkGuardsTest(unittest.TestCase):
+    def test_a_step_that_frees_nothing_is_not_a_candidate(self):
+        io = FakeIO(others=4)
+        io.fps["big"] = [{0: 12 * GiB}] * 4
+        el, _, _ = controller(io)
+        el.tick(); el.tick()
+        self.assertEqual(io.calls, [])
+
+
+class FailedGrowTest(unittest.TestCase):
+    def test_a_grow_never_ends_below_where_it_started_and_doubles_the_cooldown(self):
+        io = FakeIO(others=4); el, _, clock = controller(io)
+        el.tick(); el.tick()
+        io.calls.clear()
+        io.others = 1 * GiB; io.fail = {0}
+        clock.t += 200
+        for _ in range(6):
+            el.tick()
+        self.assertEqual(swaps(io), [("swap", "big", 0), ("swap", "big", 1)])
+        self.assertEqual(el.status()["cooldown_s"], 240)
+
+    def test_an_unloaded_grow_also_doubles_it(self):
+        io = QuietGiveupIO(others=4); el, _, clock = controller(io)
+        el.tick(); el.tick()
+        io.others = 1 * GiB; io.fail = {0, 1}
+        clock.t += 200
+        for _ in range(6):
+            el.tick()
+        self.assertEqual(el.status()["cooldown_s"], 240)
+
+
+class AliasTest(unittest.TestCase):
+    def test_ladder_reads_aliases(self):
+        self.assertEqual(ngl(elastic.ladder({"gpu-layers": "20"}, lay(64))), [20, 16, 0])
+        self.assertEqual(ngl(elastic.ladder({"ngl": "20"}, lay(64))), [20, 16, 0])
+        steps = elastic.ladder({"ncmoe": "30"}, lay(48, experts=8))
+        self.assertEqual([s["cpu_moe"] for s in steps[:3]], [30, 36, 48])
+        self.assertEqual(ngl(elastic.ladder({"cmoe": ""}, lay(48, experts=8))), [48, 36, 24, 12, 0])
+
+    def test_cpu_moe_false_is_off(self):
+        steps = elastic.ladder({"cpu-moe": "false"}, lay(48, experts=8))
+        self.assertIn({"n-cpu-moe": "12"}, [s["keys"] for s in steps])
+
+    def test_plan_keys_overwrites_the_users_spelling(self):
+        writes, rec = elastic.plan_keys({"gpu-layers": "20"}, None, {"n-gpu-layers": "16"})
+        self.assertEqual(writes, {"gpu-layers": "16"})
+        self.assertEqual(rec, {"keys": {"gpu-layers": "16"}, "was": {"gpu-layers": "20"}})
+        writes, rec2 = elastic.plan_keys({"gpu-layers": "16"}, rec, {})
+        self.assertEqual(writes, {"gpu-layers": "20"})
+        self.assertIsNone(rec2)
+
+
+class FootprintGuardsTest(unittest.TestCase):
+    def test_none_and_short_predictions_read_as_zero(self):
+        fps = elastic.footprints([None, None, None], [None, 6000], [0, 1])
+        self.assertEqual(fps, [{0: 0, 1: 0}, {0: 3000, 1: 3000}, {0: 0, 1: 0}])
+        fps = elastic.footprints([{0: 8000}, None, None], [12000, None], [0])
+        self.assertEqual(fps, [{0: 8000}, {0: 0}, {0: 0}])
 
 
 if __name__ == "__main__":
