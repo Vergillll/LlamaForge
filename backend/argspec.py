@@ -19,6 +19,8 @@ SECTION_RE = re.compile(r"^-+\s*(.+?)\s*-+\s*$")
 # a values line under an option: ik's "types: none, draft, mtp", mainline's
 # "allowed values: f32, f16, q8_0". Only a bare list: "types: int, str. example: ..." is prose
 VALUES_RE = re.compile(r"(?:types|allowed values):\s*([\w.-]+(?:,\s*[\w.-]+)+)")
+# the head of such a line, to spot a list that wraps over several lines
+VALUES_HEAD_RE = re.compile(r"(?:types|allowed values):")
 CONT_INDENT = 20        # flags start by column 9 (ik) or 0 (mainline); descriptions at 34 / 40
 
 def _balance_parens(s):
@@ -75,9 +77,20 @@ def _classify(placeholder, default):
 def parse_help(text):
     section = "general"
     items, pending = [], None
+    values_cont = ""        # a values list still wrapping over continuation lines
+
+    def take_values(extra):
+        """Record the build's own value list off a (re-joined) continuation line."""
+        vals = VALUES_RE.fullmatch(extra)
+        if vals and pending["values"] is None and pending["type"] != "bool":
+            pending["values"] = [v.strip() for v in vals.group(1).split(",")]
+            if pending["curated"]:            # the build's own list beats ours
+                pending.update(options=pending["values"], curated=False)
 
     def flush():
-        nonlocal pending
+        nonlocal pending, values_cont
+        if values_cont:                       # help ran out mid-list
+            take_values(values_cont); values_cont = ""
         if pending:
             items.append(pending); pending = None
 
@@ -95,15 +108,18 @@ def parse_help(text):
         indent = len(raw) - len(raw.lstrip())
         if pending and raw.startswith("   ") and (indent >= CONT_INDENT or not raw.lstrip().startswith("-")):
             extra = raw.strip()
+            if values_cont:                   # the previous line broke mid-list
+                extra, values_cont = values_cont + " " + extra, ""
+            # a long "allowed values:"/"types:" list wraps over several lines;
+            # a trailing comma means more values follow, so glue before parsing
+            if extra.endswith(",") and VALUES_HEAD_RE.match(extra):
+                values_cont = extra
+                continue
             env = re.search(r"\(env:\s*([A-Z0-9_]+)\)", extra)
             if env: pending["env"] = env.group(1)
             dflt = re.search(r"\(default:\s*(.*?)\)", extra)
             if dflt and not pending.get("default"): pending["default"] = dflt.group(1)
-            vals = VALUES_RE.fullmatch(extra)
-            if vals and pending["values"] is None and pending["type"] != "bool":
-                pending["values"] = [v.strip() for v in vals.group(1).split(",")]
-                if pending["curated"]:            # the build's own list beats ours
-                    pending.update(options=pending["values"], curated=False)
+            take_values(extra)
             continue
 
         if not line.lstrip().startswith("-"):

@@ -126,6 +126,52 @@ class DocumentedValuesTest(unittest.TestCase):
         self.assertFalse(it["curated"])
         self.assertEqual(it["default"], "f16")
 
+    def test_a_wrapped_allowed_values_list_is_read_whole(self):
+        """A build with many cache types prints `allowed values:` over several
+        lines, every unfinished one ending in a comma. Checked line by line none
+        of them matched, so the knob kept our shorter curated list."""
+        it = _one("-ctk,  --cache-type-k TYPE              KV cache data type for K\n"
+                  "                                        allowed values: f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1,\n"
+                  "                                        q6_0, q6_1, q3_0, q3_1, q2_0, q2_1, iq4_xs,\n"
+                  "                                        iq3_s, iq2_m\n"
+                  "                                        (default: f16)\n", "cache-type-k")
+        want = ["f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1",
+                "q6_0", "q6_1", "q3_0", "q3_1", "q2_0", "q2_1", "iq4_xs", "iq3_s", "iq2_m"]
+        self.assertEqual((it["type"], it["options"], it["values"]), ("enum", want, want))
+        self.assertFalse(it["curated"])
+        self.assertEqual(it["default"], "f16")
+
+    def test_a_single_line_list_leaves_the_following_lines_alone(self):
+        """The one-line layout must not swallow what comes after it."""
+        it = _one("-ctv,  --cache-type-v TYPE              KV cache data type for V\n"
+                  "                                        allowed values: f16, q8_0, q4_0\n"
+                  "                                        (default: f16)\n"
+                  "                                        (env: LLAMA_ARG_CACHE_TYPE_V)\n", "cache-type-v")
+        self.assertEqual(it["values"], ["f16", "q8_0", "q4_0"])
+        self.assertFalse(it["curated"])
+        self.assertEqual((it["default"], it["env"]), ("f16", "LLAMA_ARG_CACHE_TYPE_V"))
+
+    def test_a_wrapped_list_cut_off_by_the_next_option_is_dropped(self):
+        """A list still open when the next option starts must not reach either
+        option: a partial list would make a pinned build reject the values it lost."""
+        items = argspec.parse_help(
+            "-ctk,  --cache-type-k TYPE              KV cache data type for K\n"
+            "                                        allowed values: f32, f16, bf16, q8_0,\n"
+            "-ctv,  --cache-type-v TYPE              KV cache data type for V\n"
+            "                                        (default: f16)\n")
+        k, v = (next(i for i in items if i["key"] == key) for key in ("cache-type-k", "cache-type-v"))
+        self.assertIsNone(k["values"])
+        self.assertTrue(k["curated"])              # falls back to our list, not a partial one
+        self.assertIsNone(v["values"])
+        self.assertEqual(v["default"], "f16")
+
+    def test_a_wrapped_list_open_at_the_end_of_the_help_is_dropped(self):
+        it = _one("-ctk,  --cache-type-k TYPE              KV cache data type for K\n"
+                  "                                        allowed values: f32, f16, bf16, q8_0,\n",
+                  "cache-type-k")
+        self.assertIsNone(it["values"])
+        self.assertTrue(it["curated"])
+
     def test_a_types_line_that_goes_on_is_prose(self):
         it = _one("         --override-kv KEY=TYPE:VALUE\n"
                   "                                  advanced option to override model metadata by key.\n"
