@@ -32,6 +32,19 @@ One of them fails the build if a view calls the native `confirm()`, `prompt()` o
 engine running, which is handy for UI work.
 
 ## Pull requests
+- **Comment on the issue before you open a PR for it.** A line like "I'll take
+  this" is enough. It stops two people fixing the same bug, and it gives the
+  person who reported it a chance to say they already have a fix.
+- **The reporter goes first.** If the person who opened an issue says they have a
+  fix, give them the chance to send it. A PR that lands ahead of theirs with the
+  same fix may be closed in favour of theirs.
+- **Credit what you use.** If your PR includes code or tests someone posted in an
+  issue or review, say so in the PR and add them as a co-author
+  (`Co-authored-by: Name <email>` in the commit).
+- **AI-assisted PRs are welcome** (LlamaForge itself is heavily AI-assisted), as
+  long as you've read the diff, run the tests yourself, and will be around to
+  answer review comments. Unclaimed PRs that look like they came from an
+  automated issue-to-PR pipeline may be closed without review.
 - Keep PRs focused — one fix or feature each.
 - Include a screenshot for UI changes, ideally in both light and dark themes, and
   check narrow widths (the sidebar changes layout below 900px, 760px and 600px).
