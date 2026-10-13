@@ -410,6 +410,28 @@ button.qlink:hover{color:var(--ink-strong);border:0}
 .qmore>.ed-knobs{padding:10px 10px 0}
 .qchanges{font-size:11px;line-height:1.5;color:var(--amber-text)}
 .qchanges:empty{display:none}
+/* VRAM estimate under the Load strip, and the fits / doesn't-fit zones under its sliders */
+.qvram{display:flex;flex-direction:column;gap:7px;padding:10px 12px;background:var(--inset);border:1px solid var(--hair-dim);border-radius:var(--r)}
+.qv-head{display:flex;justify-content:space-between;align-items:baseline;gap:6px 14px;flex-wrap:wrap}
+.qv-sum{font-family:var(--mono);font-size:12px;color:var(--ink-hi)}
+.qv-sum.over{color:var(--red)}
+.qv-sum.soft{color:var(--amber-text)}
+.qv-delta{color:var(--amber-text)}
+.qv-bar{position:relative;display:flex;height:18px;border:1px solid var(--hair);border-radius:var(--r-xs);overflow:hidden;background:var(--panel)}
+.qv-bar>span:not(.qv-cap){height:100%}
+.qv-cap{position:absolute;top:0;bottom:0;width:3px;margin-left:-1px;background:var(--ink-strong);box-shadow:0 0 0 1px var(--red)}
+.qv-w{background:var(--amber)}
+.qv-kv{background:var(--cyan)}
+.qv-ex{background:color-mix(in srgb,var(--cyan) 55%,var(--panel))}
+.qv-mm{background:var(--green)}
+.qv-cp{background:var(--faint)}
+.qv-ot{background:repeating-linear-gradient(135deg,var(--hair-hi) 0 4px,transparent 4px 8px)}
+.qv-legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-family:var(--mono);font-size:10.5px;color:var(--dim)}
+.qv-meas{font-family:var(--mono);font-size:11px;color:var(--ink)}
+.qv-sw{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px;vertical-align:0}
+.qzone{display:flex;height:3px;border-radius:2px;overflow:hidden;margin-top:-1px}
+.qz-ok{background:var(--green)}
+.qz-no{background:var(--red)}
 @media (max-width:900px){.qstrip{grid-template-columns:118px minmax(0,1fr)}}
 @media (max-width:760px){
   .qstrip{grid-template-columns:1fr}

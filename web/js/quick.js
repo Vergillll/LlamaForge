@@ -204,7 +204,7 @@ function contextRow(m, meta, find, glob) {
   const note = fitNote(m, meta, glob);
   return `<div class="qrow qctx${v !== "" ? " set" : ""}" data-qctx data-desc="${descOf("context", knob)}">
     <div class="qf">${lab("Context", knob.key)}${seg2("ctx", mode, ["auto", "Auto"], ["set", "Set"], "context")}</div>
-    ${max ? `<div class="qslide">${slider("ctx", CTX_MIN, max, CTX_STEP, auto ? (rt ? rt.n_ctx_slot : fill) : v, "context size", auto)}
+    ${max ? `<div class="qslide">${slider("ctx", CTX_MIN, max, CTX_STEP, auto ? (rt ? rt.n_ctx_slot : fill) : v, "context size", auto)}<div class="qzone" data-qzone="ctx" aria-hidden="true" hidden><span></span><span></span></div>
       <span class="qticks"><span>${group(String(CTX_MIN))}</span><span>model max ${group(String(max))}</span></span></div>` : `<div class="qslide"></div>`}
     <label class="qf qnum"><span class="qlab qsub">${esc(per)}</span>
       <input data-k="${esc(spelling(s, knob))}" data-orig="${esc(v)}" data-label="context" data-qlink="ctx" data-fill="${esc(String(fill))}"
@@ -231,7 +231,7 @@ function placementRow(m, meta, find) {
   const ends = moe ? ["0 · all on GPU", "all layers"] : ["0 · CPU only", "all on GPU"];
   const trade = moe ? "more: less VRAM, slower" : "more: faster, more VRAM";
   const layer = layerK ? `
-    <div class="qslide" data-qmanual${manual ? "" : " hidden"}>${lab(what, layerK.key)}${max ? `${slider("layers", 0, max, 1, lv, what)}
+    <div class="qslide" data-qmanual${manual ? "" : " hidden"}>${lab(what, layerK.key)}${max ? `${slider("layers", 0, max, 1, lv, what)}<div class="qzone" data-qzone="layers" aria-hidden="true" hidden><span></span><span></span></div>
       <span class="qticks"><span>${ends[0]}</span><span>${ends[1]}${max ? ` · ${max}` : ""}</span></span>` : ""}</div>
     <label class="qf qnum" data-qmanual${manual ? "" : " hidden"}><span class="qlab qsub">${esc(trade)}</span>
       <input data-k="${esc(spelling(s, layerK))}" data-orig="${esc(lv)}" data-label="${esc(what.toLowerCase())}" data-qlink="layers"
@@ -258,7 +258,9 @@ export function loadStrip(m, meta, schema, glob) {
   const fields = L.fields.map(f => { const k = find(f.key); return k ? field(m, k, f) : ""; }).join("");
   const body = contextRow(m, meta, find, glob) + placementRow(m, meta, find)
     + (fields ? `<div class="qfields">${fields}</div>` : "");
-  return body.trim() ? strip("load", L.title, L.hint, body) : "";
+  if (!body.trim()) return "";
+  // the VRAM estimate is filled in by models.js once /api/model/predict answers
+  return strip("load", L.title, L.hint, body + `<div class="qvram" data-qvram aria-live="polite"><span class="qmuted">estimating VRAM...</span></div>`);
 }
 
 let moreOpen = false;            // "6 more" sampling row, kept across editor rebuilds
@@ -321,6 +323,77 @@ export function thinkingStrip(m, meta, schema) {
   const off = vision && !vOn ? "Vision off: text only. The projector file is kept; turn it back on any time." : "";
   const notes = [hint, off].filter(Boolean).map(t => `<div class="slotnote dim">${esc(t)}</div>`).join("");
   return strip("thinking", T.title, T.hint, `<div class="qfields">${parts.join("")}</div>${notes}`);
+}
+
+/* ---------- VRAM estimate (POST /api/model/predict) ---------- */
+
+export const gib = mib => (mib / 1024).toFixed(1);
+const PARTS = [["weights_mib", "Weights", "w"], ["kv_mib", "KV", "kv"], ["exact_mib", "Exact tail", "ex"],
+               ["mmproj_mib", "Vision", "mm"], ["compute_mib", "Compute", "cp"]];
+
+// the estimate under the Load strip: what the values on screen would put on
+// the GPU, against what is free of other apps
+export function vramBlock(r) {
+  if (!r || r.error || !r.predicted)
+    return `<span class="qmuted">VRAM estimate unavailable${r && r.error ? `: ${esc(r.error)}` : ""}</span>`;
+  const p = r.predicted, g = r.gpu, total = p.total_mib;
+  const delta = r.saved ? total - r.saved.total_mib : 0;
+  const leftToFit = r.fit_on && (r.notes || []).some(n => /left to fit/.test(n));
+  let verdict = "", over = false;
+  if (g) {
+    const room = g.budget_mib - total;
+    over = room < 0;
+    verdict = !over ? `${gib(room)} GiB free`
+      : leftToFit ? `${gib(-room)} GiB more than free: fit cuts back at load`
+      : `over by ${gib(-room)} GiB - won't fit`;
+  }
+  const scale = Math.max(total, g ? g.total_mib : total) || 1;
+  const pct = mib => (mib / scale * 100).toFixed(2);
+  const segs = PARTS.map(([k, , c]) => p[k] ? `<span class="qv-${c}" style="width:${pct(p[k])}%"></span>` : "").join("")
+    + (g && g.others_mib ? `<span class="qv-ot" style="width:${pct(g.others_mib)}%"></span>` : "");
+  const cap = g && over && !leftToFit ? `<span class="qv-cap" style="left:${pct(g.budget_mib)}%"></span>` : "";
+  const legend = PARTS.filter(([k]) => p[k]).map(([k, label, c]) =>
+    `<span><i class="qv-sw qv-${c}"></i>${label} ${gib(p[k])}</span>`).join("")
+    + (g && g.others_mib ? `<span><i class="qv-sw qv-ot"></i>Other apps ${gib(g.others_mib)}</span>` : "");
+  // the store measures loads of the saved settings, so that is what it is set against
+  const meas = r.saved ? `<div class="qv-meas">Saved settings: predicted ${gib(r.saved.total_mib)} GiB / ${r.measured_mib
+    ? `measured ${gib(r.measured_mib)} GiB on the last load` : "not measured yet: the next load measures it"}</div>` : "";
+  const sure = r.confident && !leftToFit ? "predicted" : "estimate uncertain";
+  const notes = (r.notes || []).map(n => `<div class="qmuted">${esc(n)}</div>`).join("");
+  return `<div class="qv-head"><span class="qlab">VRAM${g ? ` · ${esc(g.name)} ${gib(g.total_mib)} GiB` : ""}</span>
+    <span class="qv-sum${over ? (leftToFit ? " soft" : " over") : ""}">≈ ${gib(total)} GiB${Math.abs(delta) >= 51
+      ? ` <span class="qv-delta">(${delta > 0 ? "+" : "−"}${gib(Math.abs(delta))} from unsaved changes)</span>` : ""}${verdict ? ` · ${esc(verdict)}` : ""}
+    <span class="qmuted">· ${sure}</span></span></div>
+    <div class="qv-bar" role="img" aria-label="${esc(`Predicted VRAM ${gib(total)} of ${g ? gib(g.total_mib) : "?"} GiB`)}">${segs}${cap}</div>
+    <div class="qv-legend">${legend}</div>${meas}${notes}`;
+}
+
+// where a slider's range stops fitting, as a percentage of the range
+export function zoneSplit(limit, min, max, upward) {
+  if (limit == null) return upward ? 0 : 100;          // nothing on this slider fits
+  const at = Math.min(Math.max((limit - min) / ((max - min) || 1), 0), 1) * 100;
+  return +at.toFixed(1);
+}
+
+// /api/model/predict's limits on the sliders: context and GPU layers fit up to
+// theirs, MoE layers on the CPU fit from theirs
+export function paintZones(row, r) {
+  const limits = (r && r.limits) || {};
+  row.querySelectorAll("[data-qzone]").forEach(z => {
+    const range = z.parentElement.querySelector("[data-qmirror]");
+    const lim = limits[z.dataset.qzone];
+    if (!range || !r || !r.gpu || lim === undefined) { z.hidden = true; return; }
+    const place = range.closest("[data-qplace]");
+    const moeCpu = z.dataset.qzone === "layers" && !!place && /n-cpu-moe/.test(place.dataset.desc || "");
+    const split = zoneSplit(lim, +range.min, +range.max, !moeCpu);
+    const [a, b] = z.children;
+    a.className = moeCpu ? "qz-no" : "qz-ok"; b.className = moeCpu ? "qz-ok" : "qz-no";
+    a.style.width = `${split}%`; b.style.width = `${100 - split}%`;
+    z.hidden = false;
+    z.title = moeCpu ? (lim == null ? "no count of CPU layers fits" : `fits from ${lim} layers on the CPU`)
+      : z.dataset.qzone === "ctx" ? (lim == null ? "no context fits" : `fits up to ${lim}`)
+      : (lim == null ? "no layer count fits" : `fits up to ${lim} layers`);
+  });
 }
 
 /* ---------- DOM helpers for the handlers in models.js ---------- */

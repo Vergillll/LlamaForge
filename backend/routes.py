@@ -1367,6 +1367,113 @@ def post_model_unregister(req):
     return 200, {"ok": True, "backend": backend.name}
 
 
+# ---- VRAM estimate for the editor's Load strip ------------------------------
+# What a load would put on the GPU with the values in the editor right now,
+# saved or not, next to what the saved settings take, the last measured load of
+# them, and where the context and layer sliders stop fitting.
+
+_LAYOUTS = {}                   # GGUF path -> (mtime, gguf.layout()): the tensor table, read once
+
+
+def _layout(path):
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return None
+    got = _LAYOUTS.get(path)
+    if not got or got[0] != mtime:
+        got = _LAYOUTS[path] = (mtime, gguf.layout(path))
+    return got[1]
+
+
+_PINS = ("n-gpu-layers", "n-cpu-moe", "cpu-moe", "override-tensor")
+
+
+def _fit_view(s, runtime):
+    """--fit is on unless turned off, and only moves what is left unset. Then the
+    estimate is of fit's input, not of what it will load: say so, and take the
+    context it chose on the last load where there was one."""
+    s, notes = dict(s), []
+    if s.get("fit", "on").lower() in ("off", "false", "0"):
+        return s, notes, False
+    if not s.get("ctx-size"):
+        if runtime:
+            slots_n = runtime.get("n_slots") or 1
+            par = s.get("parallel", "")
+            per_seq = slots_n > 1 and par not in ("", "-1")
+            s["ctx-size"] = str(runtime["n_ctx_slot"] * (slots_n if per_seq else 1))
+            notes.append("context: what fit chose on the last load")
+        else:
+            notes.append("context left to fit: counted at the model's full trained length; "
+                         "fit shortens it at load if it doesn't fit")
+    if not any(s.get(k) for k in _PINS):
+        notes.append("placement left to fit: every layer counted on the GPU; "
+                     "fit moves layers off at load if they don't fit")
+    return s, notes, True
+
+
+def _breakdown(p):
+    return {"total_mib": footprint.gpu_total(p), "weights_mib": p["weights_gpu_mib"],
+            "kv_mib": p["kv_body_mib"], "exact_mib": p["kv_exact_mib"] + p["kv_stage_mib"],
+            "mmproj_mib": p["first_gpu_mib"], "compute_mib": slots.OVERHEAD_MIB + p["staging_mib"],
+            "ram_mib": p["ram_mib"], "ctx": p["ctx"], "ctx_slot": p["ctx_slot"]}
+
+
+def post_model_predict(req):
+    mid = req.body.get("model") or ""
+    ini = config.read_sections()
+    if not mid or mid == "*" or mid not in ini:
+        raise ApiError(404, "model is not registered")
+    saved = dict(ini.get("*", {}), **ini[mid])
+    path = saved.get("model") or ""
+    lay = _layout(path) if path else None
+    mmproj = saved.get("mmproj")
+    kw = {"size_bytes": slotctl._size(path) or None,
+          "mmproj_bytes": slotctl._size(mmproj) if mmproj else 0}
+    rows = {m["id"]: m for m in model_state()["models"]}
+    rt = (rows.get(mid) or {}).get("runtime")
+
+    eff_new, notes, fit_on = _fit_view(footprint.merge(saved, req.body.get("settings")), rt)
+    eff_saved, _, _ = _fit_view(footprint.merge(saved, {}), rt)
+    p_new = footprint.predict(eff_new, lay, **kw)
+    p_saved = footprint.predict(eff_saved, lay, **kw)
+
+    out = {"predicted": _breakdown(p_new), "saved": _breakdown(p_saved),
+           "confident": p_new["confident"], "notes": notes + p_new["uncertain"],
+           "fit_on": fit_on, "gpu": None, "fits": None, "limits": {}, "measured_mib": None}
+    gpus = [g for g in (_GPU_TELEMETRY.get() or []) if "total" in g]
+    if gpus:
+        g = gpus[0]      # one GPU: the per-GPU split of a multi-GPU load is the slot planner's
+        # other apps: what is in use, less our loaded models (their saved prediction)
+        ours = 0
+        for r in rows.values():
+            if r.get("status") == "loaded" and r.get("in_ini") and not r.get("process") and r["id"] in ini:
+                s_r = dict(ini.get("*", {}), **ini[r["id"]])
+                lay_r = lay if r["id"] == mid else _layout(s_r.get("model") or "")
+                ours += footprint.gpu_total(footprint.predict(
+                    _fit_view(footprint.merge(s_r, {}), r.get("runtime"))[0], lay_r,
+                    size_bytes=slotctl._size(s_r.get("model")) or None,
+                    mmproj_bytes=slotctl._size(s_r.get("mmproj")) if s_r.get("mmproj") else 0))
+        others = max(0, g["used"] - ours)
+        budget = g["total"] - others
+        out["gpu"] = {"name": g.get("name", ""), "total_mib": g["total"],
+                      "others_mib": others, "budget_mib": budget}
+        out["fits"] = footprint.gpu_total(p_new) <= budget
+        if lay:
+            n_layer = int((lay.get("kv") or {}).get("block_count") or 0)
+            moe = int((lay.get("kv") or {}).get("expert_count") or 0) > 0
+            out["limits"] = footprint.fit_limits(
+                eff_new, lay, budget, int((lay.get("kv") or {}).get("context_length") or 0) or 32768,
+                n_layer, moe, **kw)
+    try:                 # the last load of the saved settings the slot manager measured
+        fp = SLOTS.store.measured(SLOTS.key(mid))
+        if fp:
+            out["measured_mib"] = max(sum(v.values()) for v in fp.values())
+    except Exception:
+        pass
+    return 200, out
+
+
 # ---- llama.cpp aliases (kept: this is what the dashboard calls today) -------
 
 def post_save(req):
@@ -1400,7 +1507,11 @@ def post_load(req):
             res["error"] = {"message": _slot_error(out)}
         return status, res
     _stop_procs()
-    code, res = router("/models/load", "POST", {"model": req.body.get("model")})
+    mid = req.body.get("model")
+    before, seq = _plain_before(mid)
+    code, res = router("/models/load", "POST", {"model": mid})
+    if code == 200 and before:
+        _spawn(_measure_plain_load, mid, before, seq)
     return (200 if code == 200 else 400), res
 
 
@@ -1411,8 +1522,72 @@ def post_unload(req):
         if not out.get("ok"):
             res["error"] = {"message": out.get("error") or "unload failed"}
         return status, res
-    code, res = router("/models/unload", "POST", {"model": req.body.get("model")})
+    mid = req.body.get("model")
+    with _PLAIN_LOCK:
+        _PLAIN["seq"] += 1
+        live = _PLAIN["live"].pop(mid, None)
+    before = SLOTS._used() if live else None
+    code, res = router("/models/unload", "POST", {"model": mid})
+    if code == 200 and before:
+        _spawn(_measure_plain_unload, mid, before, live)
     return (200 if code == 200 else 400), res
+
+
+# ---- footprint of a plain load (one model at a time, through the router) ----
+# The slot manager measures the loads it runs; a load straight through the
+# router is measured here the same way and into the same store (footprints.json,
+# keyed by model + build + memory settings): GPU memory in use before the load
+# and once it is loaded; at unload, what came back - often more, since the
+# CUDA pool grows with the first long prompt, and the store keeps the larger.
+# Only a load with nothing else running is measured: the router evicts what is
+# loaded inside the same request, and that would hide part of the load.
+_PLAIN = {"seq": 0, "live": {}}         # live: model -> (key, devices) it was measured under
+_PLAIN_LOCK = threading.Lock()
+
+
+def _spawn(fn, *args):
+    threading.Thread(target=fn, args=args, daemon=True).start()
+
+
+def _plain_before(mid):
+    """(per-GPU MiB in use, sequence number), or (None, _) when this load can't
+    be measured: another model is up, or the GPUs can't be read."""
+    with _PLAIN_LOCK:
+        _PLAIN["seq"] += 1
+        seq = _PLAIN["seq"]
+    states = SLOTS._statuses() or {}
+    if any(s.get("value") in slotctl.RUNNING + ("loading",)
+           for m, s in states.items() if m != mid):
+        return None, seq
+    return SLOTS._used() or None, seq
+
+
+def _measure_plain_load(mid, before, seq):
+    ok, _ = SLOTS._wait_loaded(mid)
+    if not ok:
+        return
+    after = SLOTS._used()
+    fp = {g: after[g] - before[g] for g in after
+          if g in before and after[g] - before[g] >= footprint.NOISE_MIB}
+    with _PLAIN_LOCK:
+        if seq != _PLAIN["seq"] or not fp:
+            return                       # another load or unload ran meanwhile
+        devices = tuple(sorted(fp))
+        k = SLOTS.key(mid)
+        SLOTS.store.record(k, devices, fp, "load")
+        _PLAIN["live"][mid] = (k, devices)
+
+
+def _measure_plain_unload(mid, before, live):
+    k, devices = live
+    for _ in range(slotctl.UNLOAD_TIMEOUT_S):
+        if ((SLOTS._statuses() or {}).get(mid) or {}).get("value") not in slotctl.RUNNING + ("loading",):
+            break
+        SLOTS.sleep(1)
+    SLOTS.sleep(1)                       # the driver frees a dead process's memory a beat later
+    after = SLOTS._used()
+    freed = {g: before[g] - after[g] for g in devices if g in before and g in after}
+    SLOTS.store.record(k, devices, freed, "unload")
 
 
 def _router_loaded_ids(states=("loaded", "loading", "sleeping")):
@@ -2710,6 +2885,7 @@ POST_ROUTES = {
     "/api/models/unregister":   post_model_unregister,
     # llama.cpp-specific aliases
     "/api/save":                post_save,
+    "/api/model/predict":       post_model_predict,
     "/api/model/vision":        post_model_vision,
     "/api/load":                post_load,
     "/api/unload":              post_unload,

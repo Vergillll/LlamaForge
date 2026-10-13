@@ -246,6 +246,27 @@ function filterKnobs(inp) {
   if (kquery && more && !more.open) more.open = true;    // a search reaches into More settings
   applyKnobFilter(edit);
 }
+// The Load strip's VRAM estimate: /api/model/predict on the values on screen,
+// saved or not, a moment after the last edit. A reply older than the latest
+// request is dropped, so a slow one can never overwrite a newer estimate.
+function scheduleVram(row, delay = 300) {
+  if (!row || !$("[data-qvram]", row)) return;
+  clearTimeout(row._vramTimer);
+  row._vramTimer = setTimeout(() => refreshVram(row), delay);
+}
+async function refreshVram(row) {
+  const box = $("[data-qvram]", row);
+  if (!box) return;
+  const seq = row._vramSeq = (row._vramSeq || 0) + 1;
+  const settings = {};
+  $$("[data-qstrip=load] [data-k]", row).forEach(el => { settings[el.dataset.k] = el.value.trim(); });
+  let r;
+  try { r = await api("/api/model/predict", {model: row.dataset.id, settings}); } catch (e) { r = {error: String(e)}; }
+  if (seq !== row._vramSeq || !box.isConnected) return;
+  setHTML(box, strips.vramBlock(r));
+  strips.paintZones(row, r);
+}
+
 // what the unsaved edits change, written beside Save; the strips' fields and the
 // grid's both carry data-orig
 function recount(row) {
@@ -416,6 +437,7 @@ function syncEditor(row, m) {
     row._ks = ks;
     row._slot = row._think = row._live = row._btns = row._note = null;
     recount(row);                // a change can be pending on open (see quick.js, fit = off)
+    scheduleVram(row, 0);
   }
   const regions = [[".ed-slot", x => slots.block(x, renderModels), "_slot"],
                    [".ed-qthink", thinkRegion, "_think"],
@@ -983,6 +1005,7 @@ export function initModels() {
     if (e.target.dataset.qmirror != null || e.target.dataset.qlink != null) strips.mirror(e.target);
     // say what a Save would change
     if (e.target.dataset.k != null || e.target.dataset.qmirror != null) recount(row);
+    if (e.target.closest("[data-qstrip=load]")) scheduleVram(row);
   });
 
   // keyboard map: 1-9 tabs (sidebar order), / search, j/k or arrows navigate, Enter expand,
@@ -1091,9 +1114,9 @@ export function initModels() {
     if (pSave) { e.stopPropagation(); await savePresetFrom(pSave.dataset.presetSave); return; }
     // quick access: Auto/Set, Auto/Manual, a segmented field, the "6 more" row
     const qMode = e.target.closest("#view-models [data-qmode]");
-    if (qMode) { e.stopPropagation(); strips.setMode(qMode); recount(qMode.closest(".row")); return; }
+    if (qMode) { e.stopPropagation(); strips.setMode(qMode); recount(qMode.closest(".row")); scheduleVram(qMode.closest(".row")); return; }
     const qSeg = e.target.closest("#view-models [data-qseg]");
-    if (qSeg) { e.stopPropagation(); strips.setSeg(qSeg); recount(qSeg.closest(".row")); return; }
+    if (qSeg) { e.stopPropagation(); strips.setSeg(qSeg); recount(qSeg.closest(".row")); scheduleVram(qSeg.closest(".row")); return; }
     const qMore = e.target.closest("#view-models [data-qmore]");
     if (qMore) { e.stopPropagation(); strips.toggleMore(qMore); return; }
     // thinking / vision switches

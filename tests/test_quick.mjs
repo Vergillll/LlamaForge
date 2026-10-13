@@ -173,3 +173,59 @@ test("the change summary reads like the editor talks", () => {
   assert.equal(q.describeChanges([{label: "temp", from: "", to: "0.6"}, {label: "placement", from: "", to: "off"}]),
     "2 changes: temp inherit → 0.6, placement inherit → off");
 });
+
+const PRED = {predicted: {total_mib: 14336, weights_mib: 11264, kv_mib: 342, exact_mib: 248,
+                          mmproj_mib: 1089, compute_mib: 1393, ram_mib: 7354, ctx: 64000, ctx_slot: 64000},
+              saved: {total_mib: 13926}, confident: true, notes: [], fit_on: false,
+              gpu: {name: "RTX <5070>", total_mib: 16303, others_mib: 842, budget_mib: 15461},
+              fits: true, limits: {ctx: 190464, layers: 11}, measured_mib: null};
+
+test("the VRAM block: total, the delta from unsaved edits, what is left free", () => {
+  const html = q.vramBlock(PRED);
+  assert.match(html, /≈ 14\.0 GiB <span class="qv-delta">\(\+0\.4 from unsaved changes\)<\/span> · 1\.1 GiB free/);
+  assert.match(html, /Weights 11\.0.*KV 0\.3.*Exact tail 0\.2.*Vision 1\.1.*Compute 1\.4.*Other apps 0\.8/s);
+  assert.match(html, /RTX &lt;5070&gt;/);
+  assert.doesNotMatch(html, /RTX <5070>/);
+  assert.match(html, /· predicted/);
+  assert.doesNotMatch(html, /qv-cap/);
+});
+
+test("over the budget with everything pinned: won't fit, with the line where it ends", () => {
+  const html = q.vramBlock({...PRED, predicted: {...PRED.predicted, total_mib: 16384}});
+  assert.match(html, /class="qv-sum over"/);
+  assert.match(html, /over by 0\.9 GiB - won&#39;t fit/);     // esc() takes the apostrophe too
+  assert.match(html, /class="qv-cap"/);
+});
+
+test("over the budget with fit still in charge: no alarm, fit cuts back", () => {
+  const r = {...PRED, fit_on: true, predicted: {...PRED.predicted, total_mib: 30000},
+             notes: ["context left to fit: counted at the model's full trained length; fit shortens it at load if it doesn't fit"]};
+  const html = q.vramBlock(r);
+  assert.match(html, /class="qv-sum soft"/);
+  assert.match(html, /fit cuts back at load/);
+  assert.match(html, /estimate uncertain/);
+  assert.doesNotMatch(html, /won&#39;t fit|qv-cap/);
+});
+
+test("no delta under 51 MiB, a measured load when there is one, and an error stays readable", () => {
+  assert.doesNotMatch(q.vramBlock({...PRED, saved: {total_mib: 14300}}), /unsaved changes/);
+  assert.match(q.vramBlock({...PRED, measured_mib: 14745}),
+    /Saved settings: predicted 13\.6 GiB \/ measured 14\.4 GiB on the last load/);
+  assert.match(q.vramBlock(PRED), /Saved settings: predicted 13\.6 GiB \/ not measured yet/);
+  assert.match(q.vramBlock({error: "model is <gone>"}), /unavailable: model is &lt;gone&gt;/);
+  assert.match(q.vramBlock(null), /unavailable/);
+});
+
+test("zones: where a slider stops fitting", () => {
+  assert.equal(q.zoneSplit(190464, 2048, 262144, true), 72.4);
+  assert.equal(q.zoneSplit(11, 0, 30, false), 36.7);
+  assert.equal(q.zoneSplit(null, 0, 30, true), 0);      // nothing fits: all red
+  assert.equal(q.zoneSplit(null, 0, 30, false), 100);
+  assert.equal(q.zoneSplit(999999, 2048, 262144, true), 100);
+});
+
+test("the Load strip leaves room for the estimate and hides empty zones", () => {
+  const html = q.loadStrip(model({"n-cpu-moe": "12", fit: "off", "ctx-size": "64000"}), MOE, SCHEMA, {});
+  assert.match(html, /data-qvram aria-live="polite"/);
+  assert.equal((html.match(/data-qzone="(ctx|layers)" aria-hidden="true" hidden/g) || []).length, 2);
+});

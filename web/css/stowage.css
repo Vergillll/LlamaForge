@@ -405,6 +405,8 @@
 :root[data-skin="stowage"] .qkey{font-size:11px}
 :root[data-skin="stowage"] .qf input,:root[data-skin="stowage"] .qf select{border-radius:0;padding:7px 10px}
 :root[data-skin="stowage"] .qrange{accent-color:var(--c-main)}
+:root[data-skin="stowage"] :is(.qvram,.qv-bar,.qzone){border-radius:0}
+:root[data-skin="stowage"] :is(.qv-sum,.qv-legend){font-size:12px}
 :root[data-skin="stowage"] .qrange:focus-visible{outline-color:var(--focus)}
 :root[data-skin="stowage"] :is(.qmuted,.qticks,.qchanges,.qwarn){font-size:12px}
 :root[data-skin="stowage"] .qmore>summary{font-family:var(--cond);font-weight:600;font-size:15px;letter-spacing:.05em;text-transform:uppercase;
