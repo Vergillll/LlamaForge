@@ -245,9 +245,14 @@ class TestRequest(unittest.TestCase):
         self.assertEqual(r, {"text": "Hello", "voice": "alloy", "lang": "en", "format": "pcm",
                              "model": "tts-1"})
 
-    def test_formats_other_than_pcm_are_served_as_wav(self):
-        for f in (None, "mp3", "wav", "opus"):
+    def test_wav_is_the_default_format(self):
+        for f in (None, "", "wav", "WAV"):
             self.assertEqual(tts.parse_request({"input": "x", "response_format": f})["format"], "wav")
+
+    def test_unsupported_formats_are_rejected_not_served_as_wav(self):
+        for f in ("mp3", "opus", "aac", "flac", 5):
+            with self.assertRaisesRegex(ValueError, "wav or pcm"):
+                tts.parse_request({"input": "x", "response_format": f})
 
     def test_rejects_empty_and_oversized_input(self):
         for body in ({}, {"input": "   "}, {"input": 5}, {"input": "x" * (tts.MAX_CHARS + 1)}):

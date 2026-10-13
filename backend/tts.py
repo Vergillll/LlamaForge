@@ -19,8 +19,9 @@ Each request runs llama-tts as a short-lived process (load, speak, exit): no
 VRAM is held between requests, at the cost of a couple of seconds of model
 load. One job at a time, so two requests never stack two copies on the GPU.
 
-Output is always WAV (or raw PCM): encoding mp3/opus would need a codec, and
-this backend is stdlib-only. Every common player and browser plays WAV.
+Output is WAV (or raw PCM): encoding mp3/opus would need a codec, and this
+backend is stdlib-only. Every common player and browser plays WAV. A request
+for another format gets a 400 instead of WAV bytes it would mislabel.
 
 Pure Python stdlib.
 """
@@ -63,6 +64,7 @@ _UNKNOWN_ENGINE = {"engine": "", "needs_voice": False, "langs": True}
 
 BIN_NAMES = ("llama-tts.exe", "llama-tts")
 AUDIO_EXT = (".wav", ".mp3", ".flac")
+FORMATS = ("wav", "pcm")   # what /v1/audio/speech can return (no codecs in stdlib)
 LANGS = ("en", "zh", "de", "it", "pt", "es", "ja", "ko", "fr", "ru")
 MAX_CHARS = 2000
 # Qwen3-TTS speaks at 12 frames per second of audio; llama-tts stops at end of
@@ -290,7 +292,10 @@ def parse_request(body):
     lang = str(body.get("language") or "en").strip().lower()
     if lang not in LANGS:
         raise ValueError(f"language must be one of {', '.join(LANGS)}")
-    fmt = "pcm" if body.get("response_format") == "pcm" else "wav"
+    fmt = body.get("response_format") or "wav"
+    fmt = fmt.strip().lower() if isinstance(fmt, str) else fmt
+    if fmt not in FORMATS:   # say so; WAV bytes under an .mp3 name fail to decode
+        raise ValueError(f"response_format {fmt!r} is not supported; use wav or pcm")
     voice = body.get("voice") if isinstance(body.get("voice"), str) else ""
     model = body.get("model") if isinstance(body.get("model"), str) else ""
     return {"text": text, "voice": voice, "lang": lang, "format": fmt, "model": model}
