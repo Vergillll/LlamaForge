@@ -63,6 +63,9 @@ class Deps:
     def _active_server_bin(self, c=None):
         return "/bin/llama-server"
 
+    def reload_presets(self):
+        return self.router("/models/reload", "POST", {})
+
 
 LIST = "  CUDA0: GPU A (16000 MiB, 1 MiB free)\n  CUDA1: GPU B (16000 MiB, 1 MiB free)\n"
 
@@ -128,7 +131,7 @@ class Load(Base):
         sec = self.section("m1")
         self.assertEqual((sec["device"], sec["split-mode"]), ("CUDA0", "none"))
         paths = [p for p, _, _ in self.router.calls]
-        self.assertLess(paths.index("/models?reload=1"), paths.index("/models/load"))
+        self.assertLess(paths.index("/models/reload"), paths.index("/models/load"))
 
     def test_the_load_is_measured(self):
         self.router.cost["m1"] = {1: 4100, 0: 231}

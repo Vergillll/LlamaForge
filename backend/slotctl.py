@@ -471,7 +471,7 @@ class SlotManager:
                     return 500, {"ok": False, "error": err, "evicted": evicted}
                 extra.update(process={"port": port, "build": fbin}, dropped=dropped)
             else:
-                self._d.router("/models?reload=1")
+                self._d.reload_presets()
                 before = (self._used(), self._unloads)
                 code, out = self._d.router("/models/load", "POST", {"model": mid})
                 if code != 200:

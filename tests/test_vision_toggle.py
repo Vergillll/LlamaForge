@@ -98,7 +98,7 @@ class RouteTest(_Case):
         self.assertEqual(code, 200)
         self.assertEqual(out["vision"], False)
         self.assertFalse(out["was_running"])
-        r.assert_any_call("/models?reload=1")
+        r.assert_any_call("/models/reload", "POST", {})
         self.assertNotIn("mmproj", self.sec("gemma"))
         (code, out), _ = self._post({"model": "gemma", "on": True})
         self.assertTrue(out["vision"])

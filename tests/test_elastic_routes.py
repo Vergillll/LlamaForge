@@ -337,7 +337,7 @@ class TidyTest(TempConfig):
             routes._el_tidy()
         self.assertEqual(config.read_sections()["big"]["n-gpu-layers"], "99")
         self.assertEqual(config.load()["elastic_placed"], {})
-        self.assertIn("/models?reload=1", calls)
+        self.assertIn("/models/reload", calls)
 
     def test_tidy_drops_the_room_with_the_record(self):
         import routes
@@ -396,7 +396,7 @@ class TidyTest(TempConfig):
             with self.assertRaises(OSError):
                 routes._el_tidy()
         self.assertEqual(config.read_sections()["big"]["n-gpu-layers"], "99")
-        self.assertIn("/models?reload=1", calls)          # what was written is picked up
+        self.assertIn("/models/reload", calls)          # what was written is picked up
         self.assertEqual(list(config.load()["elastic_placed"]), ["small"])
         with mock.patch.object(routes, "router", fake_router):
             routes._el_tidy()

@@ -226,6 +226,21 @@ def router(path, method="GET", body=None, timeout=30):
         return 599, {"error": str(e)}
 
 
+def reload_presets():
+    """Make the router re-read models.ini; (status, body) of the request that
+    did it. Builds disagree on the route: current llama.cpp reloads on
+    GET /models?reload=1 and has no POST /models/reload (404), while builds
+    that keep GET /models read-only reload on the POST and answer the query
+    form with a plain listing. Try the POST, fall back to the query form when
+    the route isn't there, so every build reloads exactly once."""
+    status, out = router("/models/reload", "POST", {})
+    if status in (404, 405):
+        status, out = router("/models?reload=1")
+    if status == 599:
+        out = {"error": f"could not reach the router to reload models.ini: {out.get('error')}"}
+    return status, out
+
+
 def _sse_target():
     c = cfg()
     key = network_policy.effective_key(c)
@@ -691,11 +706,11 @@ def _apply_knobs_and_reload(mid, clean):
 
 def _reload_preset(mid):
     """Make the router pick up mid's models.ini section as it is now: unload
-    it first when it's running, then ?reload=1. Whether it had been running."""
+    it first when it's running, then reload_presets(). Whether it had been running."""
     running = (_model_status(mid) or {}).get("value") in slotctl.RUNNING
     if running:
         _unload_and_wait(mid)
-    router("/models?reload=1")
+    reload_presets()
     return running
 
 
@@ -847,7 +862,7 @@ def _register_ggufs_beside(paths):
     """Add scanner-derived entries to models.ini and reload the router."""
     entries = _persist_scanned_entries(scanner.build_entries(paths))
     config.apply_ctx_defaults()
-    router("/models?reload=1")
+    reload_presets()
     return entries
 
 
@@ -1314,7 +1329,7 @@ def post_model_unregister(req):
     _reconcile_preset_binding(mid, {}, backend.name)
     config.prune_binding(mid, backend.name)
     config.prune_vision(mid, backend.name)
-    router("/models?reload=1")
+    reload_presets()
     return 200, {"ok": True, "backend": backend.name}
 
 
@@ -1824,7 +1839,7 @@ def post_scan_apply(req):
     entries = req.body.get("entries", [])
     _persist_scanned_entries(entries)
     config.apply_ctx_defaults()
-    router("/models?reload=1")
+    reload_presets()
     return 200, {"ok": True, "added": len(entries)}
 
 
@@ -1849,7 +1864,7 @@ def post_scan_prune(req):
             config.prune_binding(mid, engine)
             config.prune_vision(mid, engine)
     if removed:
-        router("/models?reload=1")
+        reload_presets()
     return 200, {"removed": removed}
 
 
@@ -3103,7 +3118,7 @@ def _el_tidy():
             _el_record(mid, None)
     finally:
         if wrote:
-            router("/models?reload=1")
+            reload_presets()
 
 
 class _ElasticIO:
