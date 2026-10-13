@@ -436,7 +436,7 @@ def main():
         if released:
             print("  removed the old [*] ctx-size = 150000 pin; llama.cpp's --fit sizes context now")
         if config.apply_ctx_defaults().get("changed") or released:
-            routes.router("/models?reload=1")
+            routes.reload_presets()
     except Exception:
         pass
     try:                    # adopt the model processes a previous panel left running

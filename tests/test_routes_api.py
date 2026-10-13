@@ -147,7 +147,7 @@ class SaveAndPresetTest(unittest.TestCase):
         self.assertTrue(out["was_running"])
         paths = [c[1] for c in self.calls if c[0] == "router"]
         self.assertIn("/models/unload", paths)
-        self.assertIn("/models?reload=1", paths)
+        self.assertIn("/models/reload", paths)
 
     def test_save_does_not_unload_an_idle_model(self):
         with mock.patch.object(routes, "router", self._router(loaded_ids=[])):
@@ -285,7 +285,7 @@ class ModelUnregisterTest(unittest.TestCase):
              mock.patch.object(config, "prune_binding"):
             routes.post_model_unregister(Req(body={"model": "bogus"}))
         paths = [c[0] for c in calls]
-        self.assertLess(paths.index("/models/unload"), paths.index("/models?reload=1"))
+        self.assertLess(paths.index("/models/unload"), paths.index("/models/reload"))
 
     def test_unregister_keeps_entry_when_loaded_model_cannot_unload(self):
         def router(path, method="GET", body=None, timeout=30):
