@@ -9,22 +9,30 @@ gets built next.
 
 On `master`, not in a tagged release yet:
 
-- **Several models at once** — multi-model mode keeps a main model and workers
-  loaded together; a placement planner checks fit against footprints measured on
-  your machine, and a model can be pinned to its own llama.cpp or ik_llama build.
-- **Embers** — small local agents that watch a topic, keep a wiki and write a
-  brief on a schedule, with **Forge** building one from an interview.
-- **MCP server** — drive LlamaForge from Claude Code, Codex or any MCP client
-  (stdio), including `pi_run`, which hands a task to the pi coding agent on a
-  loaded local model. pi installs from Setup.
-- **Voice** — text to speech on your GPU through llama.cpp's own `llama-tts`
-  with Qwen3-TTS or Pocket TTS, in a voice you record or upload, plus an OpenAI-style
-  `POST /v1/audio/speech` on the panel.
-- **Stowage, Hearth and Classic skins** — Stowage, the bay-plan look, is the new
-  default.
+- **Elastic VRAM** (NVIDIA): when another app needs the GPU, a loaded model
+  moves layers to the CPU instead of unloading, keeps its conversation through
+  llama.cpp's slot save/restore, and moves back once the memory is free.
 
 Released:
 
+- **Game mode**: unloads your models while a game runs and loads them again
+  when it closes. (v0.16.3)
+- **Load progress, Thinking and Vision switches**: real load progress from
+  llama.cpp, Thinking Auto / On / Off with a token budget, Vision off to free
+  the projector's VRAM. (v0.16.2)
+- **Several models at once** — multi-model mode keeps a main model and workers
+  loaded together; a placement planner checks fit against footprints measured on
+  your machine, and a model can be pinned to its own llama.cpp or ik_llama build. (v0.16.0)
+- **Embers** — small local agents that watch a topic, keep a wiki and write a
+  brief on a schedule, with **Forge** building one from an interview. (v0.16.0)
+- **MCP server** — drive LlamaForge from Claude Code, Codex or any MCP client
+  (stdio), including `pi_run`, which hands a task to the pi coding agent on a
+  loaded local model. pi installs from Setup. (v0.16.0)
+- **Voice** — text to speech on your GPU through llama.cpp's own `llama-tts`
+  with Qwen3-TTS or Pocket TTS, in a voice you record or upload, plus an OpenAI-style
+  `POST /v1/audio/speech` on the panel. (v0.16.0)
+- **Stowage, Hearth and Classic skins** — Stowage, the bay-plan look, is the new
+  default. (v0.16.0)
 - **"New this week"** — the top of Discover lists the model architectures
   llama.cpp just merged, each marked **IN YOUR ENGINE** or **Update engine**
   against the build you run, plus a *new & trending (14 days)* Hugging Face sort
