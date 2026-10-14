@@ -173,6 +173,55 @@ class BuildTypes(unittest.TestCase):
         self.assertEqual(compat.missing(sorted(BONSAI), None), [])
 
 
+class BuildArchs(unittest.TestCase):
+    """src/llama-arch.cpp of the checkout says which architectures a build
+    loads: an older one stops with "unknown model architecture"."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        compat._ARCH_CACHE.clear()
+
+    def table(self, body):
+        src = os.path.join(self.dir, "src")
+        os.makedirs(src, exist_ok=True)
+        with open(os.path.join(src, "llama-arch.cpp"), "w", encoding="utf-8") as f:
+            f.write(body)
+
+    # upstream's table of 2026-10-14, trimmed; the local unsloth fork of
+    # 2026-08-26 has gemma-embedding but not gemma-embedding2
+    TABLE = ("static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {\n"
+             "    { LLM_ARCH_CLIP,             \"clip\"             }, // dummy, only used by llama-quantize\n"
+             "    { LLM_ARCH_GEMMA3,           \"gemma3\"           },\n"
+             "    { LLM_ARCH_GEMMA_EMBEDDING,  \"gemma-embedding\"  },\n"
+             "    { LLM_ARCH_UNKNOWN,          \"(unknown)\"        },\n"
+             "};\n"
+             "static const std::map<llm_kv, const char *> LLM_KV_NAMES = {\n"
+             "    { LLM_KV_GENERAL_ARCHITECTURE, \"general.architecture\" },\n"
+             "};\n")
+
+    def test_reads_the_name_table_only(self):
+        self.table(self.TABLE)
+        self.assertEqual(compat.build_archs(self.dir), {"gemma3", "gemma-embedding"})
+
+    def test_unknown_when_it_cant_tell(self):
+        self.assertIsNone(compat.build_archs(""))
+        self.assertIsNone(compat.build_archs(self.dir))            # no file
+        self.table("int nothing_here;\n")
+        self.assertIsNone(compat.build_archs(self.dir))
+
+    def test_advice_for_a_newer_architecture(self):
+        self.table(self.TABLE)
+        known = compat.build_archs(self.dir)
+        msg = compat.arch_advice("gemma-embedding2", known)
+        self.assertIn("gemma-embedding2", msg)
+        self.assertIn("Build / Update", msg)
+        self.assertEqual(compat.arch_advice("gemma-embedding", known), "")
+        self.assertEqual(compat.arch_advice("gemma-embedding2", None), "")   # can't tell: say nothing
+        self.assertEqual(compat.arch_advice(None, known), "")
+        self.assertEqual(compat.arch_advice("clip", known), "")
+
+
 # Verbatim from this machine's llama-server on the Ternary-Bonsai file (2026-10-05).
 PQ2_LOG = """\
 srv  load_models: spawning server instance with name=bonsai on port 55001
@@ -228,7 +277,8 @@ class Route(unittest.TestCase):
     def test_unknown_model(self):
         status, out = self.routes.get_model_metadata(self.routes.Req(qs={"model": "nope"}))
         self.assertEqual(out["metadata"], {})
-        self.assertEqual(out["compat"], {"class": "unknown", "types": [], "ids": [], "advice": ""})
+        self.assertEqual(out["compat"], {"class": "unknown", "types": [], "ids": [], "advice": "",
+                                         "arch_advice": ""})
 
     def test_advice_knows_the_models_pin_and_whether_ik_is_built(self):
         self.cfg["model_builds"] = {"bonsai": "ik_llama"}
@@ -247,6 +297,17 @@ class Route(unittest.TestCase):
             status, out = self.routes.get_model_metadata(self.routes.Req(qs={"model": "bonsai"}))
         bt.assert_called_once_with("D:/ik")
         self.assertIn("Update ik_llama.cpp", out["compat"]["advice"])
+
+    def test_an_architecture_newer_than_the_routers_checkout(self):
+        self.cfg.update(server_bin="D:/llama.cpp/build/bin/llama-server.exe", llama_src="D:/llama.cpp")
+        with mock.patch.object(self.routes.compat, "build_archs",
+                               return_value=frozenset({"llama", "gemma3"})) as ba:
+            status, out = self.routes.get_model_metadata(self.routes.Req(qs={"model": "bonsai"}))
+        ba.assert_called_once_with("D:/llama.cpp")
+        self.assertIn("qwen3", out["compat"]["arch_advice"])
+        with mock.patch.object(self.routes.compat, "build_archs", return_value=frozenset({"qwen3"})):
+            status, out = self.routes.get_model_metadata(self.routes.Req(qs={"model": "bonsai"}))
+        self.assertEqual(out["compat"]["arch_advice"], "")
 
 
 if __name__ == "__main__":

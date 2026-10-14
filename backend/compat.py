@@ -61,6 +61,9 @@ _CACHE = {}       # normcased path -> ((path, mtime_ns, size), verdict)
 _SRC_CACHE = {}   # ggml.h path -> (mtime_ns, ids)
 # a live enum line; a retired one is commented out ("// depricated: GGML_TYPE_IQ2_TN = 142,")
 _ENUM_RE = re.compile(r"^\s*GGML_TYPE_\w+\s*=\s*(\d+)", re.M)
+_ARCH_CACHE = {}  # llama-arch.cpp path -> (mtime_ns, names)
+_ARCH_RE = re.compile(r"\{\s*LLM_ARCH_\w+\s*,\s*\"([^\"]+)\"\s*\}")
+_NOT_MODELS = frozenset({"clip", "(unknown)"})   # quantize's dummy, the fallback
 
 
 def type_name(t):
@@ -131,6 +134,36 @@ def build_types(src):
         return None
     _SRC_CACHE[path] = (mtime, ids)
     return ids
+
+
+def build_archs(src):
+    """The model architectures a checkout's src/llama-arch.cpp names, or None
+    when it can't tell. Cached until the file changes."""
+    if not src:
+        return None
+    path = os.path.join(src, "src", "llama-arch.cpp")
+    try:
+        mtime = os.stat(path).st_mtime_ns
+    except OSError:
+        return None
+    hit = _ARCH_CACHE.get(path)
+    if hit and hit[0] == mtime:
+        return hit[1]
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            names = frozenset(_ARCH_RE.findall(f.read())) - _NOT_MODELS or None
+    except OSError:
+        return None
+    _ARCH_CACHE[path] = (mtime, names)
+    return names
+
+
+def arch_advice(arch, known):
+    """One line when the checkout predates the file's architecture, else ""."""
+    if not arch or not known or arch in known or arch in _NOT_MODELS:
+        return ""
+    return (f"Architecture {arch} is newer than this llama.cpp build: it stops with "
+            f"\"unknown model architecture\". Update llama.cpp in Build / Update.")
 
 
 def missing(ids, known):

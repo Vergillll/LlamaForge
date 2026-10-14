@@ -1071,6 +1071,9 @@ def get_model_metadata(req):
                                  build=pins.get(mid, ""),
                                  ik_built=any(o["ref"] == builds.IK for o in opts),
                                  ik_missing=stale)
+    # a model family newer than the build: "unknown model architecture" at load
+    ok["arch_advice"] = compat.arch_advice((meta or {}).get("architecture"),
+                                           compat.build_archs(builds.source_dir(mid, c, _installs(c))))
     return 200, {"metadata": meta or {}, "compat": ok,
                  "builds": {"options": [{k: o[k] for k in ("ref", "label", "router")} for o in opts],
                             "pinned": pins.get(mid, "")}}
