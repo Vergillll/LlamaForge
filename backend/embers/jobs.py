@@ -742,9 +742,8 @@ def _checked_evidence(ember, items):
                     text = wikifs.read_raw(ember.root, sha)
                 except (OSError, ValueError):
                     text = None
-                norm[sha] = verify.normalise(text) if text is not None else None
-            q = verify.normalise(ev["quote"])
-            if norm[sha] is not None and len(q) >= verify.MIN_QUOTE and verify._contains(norm[sha], q):
+                norm[sha] = verify.raw_forms(text) if text is not None else None
+            if norm[sha] is not None and verify.quote_in(norm[sha], ev["quote"]):
                 out.setdefault(iid, []).append(ev)
     return out
 

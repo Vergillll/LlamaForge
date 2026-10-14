@@ -20,13 +20,15 @@ ITEM_RE = re.compile(r"it-[0-9a-f]{8}")                     # also a valid Obsid
 RAW_RE  = re.compile(r"[0-9a-f]{12}")
 DONE_WORK = "a loop opened on finished work alone"
 
-_QUOTES = dict.fromkeys(map(ord, "'\"`\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u201f\u00ab\u00bb"), None)
+_QUOTES = dict.fromkeys(map(ord, "'\"`\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u201f\u00ab\u00bb"
+                         "\u00ad"), None)   # and the soft hyphen, invisible in PDF copies
 _DASHES = dict.fromkeys(map(ord, "-\u2010\u2012\u2013\u2014\u2015"), " ")
 HYPHEN  = "\u2011"                       # a hyphen inside a word stays part of it
 MINUS   = "\u2212"                       # kept only in front of a digit
 _MINUS  = re.compile(r"[-" + MINUS + r"](?=\d)")
 _HYPHEN = re.compile(r"(?<=\w)-(?=\w)")
 _WORD   = r"\w" + MINUS + HYPHEN                      # characters that glue a match to its neighbours
+_BREAK  = re.compile(r"(?<=\w)[-‐­][ \t]*\r?\n\s*(?=\w)")   # verifi-<newline>cation
 
 
 def _contains(hay, needle):
@@ -44,9 +46,28 @@ def normalise(s):
     return " ".join(s.split())
 
 
-def check_quote(quote, raw_text):
+def raw_forms(raw_text):
+    """(normalised raw, loose form or None). A raw that breaks words across
+    lines with a hyphen (PDF copies) also gets a loose form with the breaks
+    joined and in-word hyphens dropped: verifi-/cation and state-of-the-/art
+    can't be told apart without a dictionary, and one quote may cross both."""
+    raw_text = raw_text or ""
+    loose = None
+    if _BREAK.search(raw_text):
+        loose = normalise(_BREAK.sub("", raw_text)).replace(HYPHEN, "")
+    return normalise(raw_text), loose
+
+
+def quote_in(forms, quote):
+    plain, loose = forms
     q = normalise(quote)
-    return len(q) >= MIN_QUOTE and _contains(normalise(raw_text), q)
+    if len(q) < MIN_QUOTE:
+        return False
+    return _contains(plain, q) or (loose is not None and _contains(loose, q.replace(HYPHEN, "")))
+
+
+def check_quote(quote, raw_text):
+    return quote_in(raw_forms(raw_text), quote)
 
 
 def page_ok(page, kinds):

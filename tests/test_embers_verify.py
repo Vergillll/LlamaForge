@@ -39,6 +39,37 @@ class CheckQuoteTest(unittest.TestCase):
         self.assertFalse(verify.check_quote("Sam here", RAWS["a1b2c3d4e5f6"]))
 
 
+class LineBreakHyphenTest(unittest.TestCase):
+    """Text copied out of PDFs breaks words across lines with a hyphen and
+    carries soft hyphens. A real quote must still match; a fake one must not."""
+    RAW = ("The model achieved state-of-the-\nart verifi-\ncation results on the\n"
+           "bench­mark, using the ﬁnal check­point.")
+
+    def test_word_split_across_a_line_matches_joined(self):
+        self.assertTrue(verify.check_quote("achieved state-of-the-art verification results", self.RAW))
+
+    def test_real_hyphen_at_a_line_end_is_kept(self):
+        self.assertTrue(verify.check_quote("the model achieved state-of-the-art", self.RAW))
+
+    def test_soft_hyphens_disappear(self):
+        self.assertTrue(verify.check_quote("results on the benchmark, using the final checkpoint", self.RAW))
+        self.assertEqual(verify.normalise("check­point"), "checkpoint")
+
+    def test_quote_typed_with_the_break_still_matches(self):
+        self.assertTrue(verify.check_quote("state-of-the- art verifi- cation", self.RAW))
+
+    def test_paraphrase_still_fails(self):
+        self.assertFalse(verify.check_quote("achieved state-of-the-art verification scores", self.RAW))
+
+    def test_joining_never_glues_across_a_real_dash_between_spaces(self):
+        self.assertFalse(verify.check_quote("beforeafter was the plan", "before -\nafter was the plan"))
+
+    def test_evidence_recheck_uses_the_same_rule(self):
+        forms = verify.raw_forms(self.RAW)
+        self.assertTrue(verify.quote_in(forms, "verification results on the benchmark"))
+        self.assertFalse(verify.quote_in(forms, "the model"))      # under MIN_QUOTE
+
+
 class VerifyOpTest(unittest.TestCase):
     def test_verified_add_drops_owner_not_in_quote(self):
         clean, why = verify.verify_op(op(), RAWS, KINDS)
