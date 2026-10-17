@@ -65,7 +65,7 @@ every server flag instead of a curated subset.
   - A loading model shows real progress (weights, draft, vision), straight from llama.cpp's load callback. One-click switches for **Thinking** (Auto / On / Off plus a token budget, with a note on whether the model's chat template can really turn it off) and **Vision** (off frees the projector's VRAM; the file stays on disk).
   - Presets, launch profiles (model + preset + pinned llama.cpp build in one click), side-by-side compare, and copy-paste client snippets.
   - **Game mode** unloads your models when a game starts and loads them again when it closes; pick any to keep loaded.
-  - **Elastic VRAM** (on `master`, coming in the next release; NVIDIA): when another app needs the GPU, a loaded model moves layers to the CPU instead of unloading, keeps its conversation, and moves back once the memory is free. Slower while it's shrunk.
+  - **Elastic VRAM** (new in v0.16.4, off by default; NVIDIA): when another app needs the GPU, a loaded model moves layers to the CPU instead of unloading, keeps its conversation, and moves back once the memory is free. Slower while it's shrunk.
   - Turn on **Multi-model** in Setup to keep a main model and workers loaded at once. A planner places each one on the GPUs that fit it, using footprints measured on your machine. A model can also be pinned to its own llama.cpp (or ik_llama.cpp) build.
 - **Chat**: llama.cpp's own chat UI (markdown, reasoning, images) inside the dashboard, on its own port, with the API key added for you.
 - **Voice**: text to speech on your GPU through llama.cpp's own `llama-tts`: Qwen3-TTS in 10 languages, or the tiny English Pocket TTS that runs faster than real time even on a CPU, optionally in a voice you record or upload (only clone voices you may use).
@@ -73,7 +73,7 @@ every server flag instead of a curated subset.
 - **Discover**: Hugging Face GGUF search that opens on what's new this week. Every quant gets a rough fit rating for your VRAM before you download (FITS / TIGHT / CPU OFFLOAD). Downloads resume after interruption, register themselves, and end in **Load & Chat**.
 - **Will it run?**: pick a repo and quant, get the fit and a rough speed estimate.
 - **Build / Update**: one-click official llama.cpp builds with rollback, or build from source with flags detected for your GPU. Also drives [ik_llama.cpp](https://github.com/ikawrakow/ik_llama.cpp) and, on Windows, [vLLM](https://github.com/vllm-project/vllm) in WSL2.
-- **Stats**: per-model tokens, speed and run counts from the router's own metrics. Per-client stats aren't possible, because clients talk to the router directly.
+- **Stats**: per-model tokens, speed and run counts from the router's own metrics, plus live GPU memory and system RAM. Per-client stats aren't possible, because clients talk to the router directly.
 - **Context**: Markdown context docs composed into profiles, injected into requests or written into `CLAUDE.md` / `AGENTS.md`.
 - **Recipes**: share a profile as readable JSON; others import it in one paste and LlamaForge downloads the model if missing. There's a [community gallery](recipes/).
 

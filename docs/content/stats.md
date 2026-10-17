@@ -23,7 +23,7 @@ Each model's record in `stats.json` (`{"models": {...}, "daily": {...}, "first_s
 
 ## How to use it
 
-1. Open the **Stats** tab. Under the token-scale line sits each GPU's memory: in the Stowage skin the same bay plan as the Models page (every loaded model stowed at its measured size, used + free = total), in Hearth and Classic a tile with a segment meter.
+1. Open the **Stats** tab. Under the token-scale line sits each GPU's memory: in the Stowage skin the same bay plan as the Models page (every loaded model stowed at its measured size, used + free = total), in Hearth and Classic a tile with a segment meter. Next to them, a **System RAM** meter shows used and free host memory (used leaves out cache the OS can reclaim); it shows even without a GPU and hides only when the OS won't report memory.
 2. The row of figures shows total tokens processed, tokens generated, cumulative inference time, distinct models used, approximate run count, and the most-used model.
 3. **Live Throughput** shows each loaded model's generation and prompt-eval tok/s and active request count in real time (polled every 4 seconds while the tab is open). In Stowage, each model's square is the colour of its container in the bay plan above it.
 4. **Activity** is a stacked prompt/generated bar chart; toggle **14d** / **30d** to change the window.
