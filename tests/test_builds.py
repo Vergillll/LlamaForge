@@ -94,6 +94,24 @@ class BuildsTest(unittest.TestCase):
         self.assertTrue(err)
 
     # ---- validate / protect
+    def test_source_dir_is_the_checkout_of_the_build_that_loads_the_model(self):
+        cfg = dict(self.cfg, llama_src=os.path.join(self.tmp, "llama.cpp"),
+                   ik_llama_src=os.path.join(self.tmp, "ik-src"))
+        self.assertEqual(builds.source_dir("m", cfg, self.installs), cfg["llama_src"])
+        pinned = dict(cfg, model_builds={"m": builds.IK})
+        self.assertEqual(builds.source_dir("m", pinned, self.installs), cfg["ik_llama_src"])
+        ik_router = dict(cfg, active_engine="ikllama")
+        self.assertEqual(builds.source_dir("m", ik_router, self.installs), cfg["ik_llama_src"])
+
+    def test_no_source_dir_for_a_prebuilt_or_a_broken_pin(self):
+        cfg = dict(self.cfg, llama_src=os.path.join(self.tmp, "llama.cpp"))
+        prebuilt = dict(cfg, model_builds={"m": "b8000-cuda"})
+        self.assertEqual(builds.source_dir("m", prebuilt, self.installs), "")
+        broken = dict(cfg, model_builds={"m": "gone"})
+        self.assertEqual(builds.source_dir("m", broken, self.installs), "")
+        elsewhere = dict(cfg, server_bin=self.b7000)
+        self.assertEqual(builds.source_dir("m", elsewhere, self.installs), "")
+
     def test_validate_ref(self):
         self.assertEqual(builds.validate("b7000-cuda", self.cfg, self.installs), "")
         self.assertEqual(builds.validate("", self.cfg, self.installs), "")

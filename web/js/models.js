@@ -628,7 +628,9 @@ function metaBlock(m) {
 const RUNS_ON = {"any": "llama.cpp + ik_llama.cpp", "ik-only": "ik_llama.cpp, not mainline", "mainline-only": "llama.cpp, not ik_llama"};
 function compatNote(id) {
   const c = compatCache[id];
-  return c && c.advice ? `<div class="slotnote warn"><b>Quant:</b> ${esc(c.advice)}</div>` : "";
+  if (!c) return "";
+  return (c.arch_advice ? `<div class="slotnote warn"><b>Build:</b> ${esc(c.arch_advice)}</div>` : "")
+       + (c.advice ? `<div class="slotnote warn"><b>Quant:</b> ${esc(c.advice)}</div>` : "");
 }
 async function fetchMeta(id) {
   try {

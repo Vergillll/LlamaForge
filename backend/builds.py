@@ -69,6 +69,24 @@ def pinned_bin(mid, cfg, installs):
     return (None, "") if _same(sbin, router_bin(cfg)) else (sbin, "")
 
 
+def source_dir(mid, cfg, installs):
+    """The checkout the binary that loads `mid` was built from, or "" when it
+    isn't one (a prebuilt install, a binary elsewhere, a broken pin)."""
+    sbin, err = pinned_bin(mid, cfg, installs)
+    if err:
+        return ""
+    sbin = sbin or router_bin(cfg)
+    if not sbin:
+        return ""
+    if _same(sbin, cfg.get("ik_llama_server_bin")):
+        return cfg.get("ik_llama_src") or ""
+    for key in ("llama_src", "ik_llama_src"):
+        src = cfg.get(key)
+        if src and _norm(sbin).startswith(_norm(src) + os.sep):
+            return src
+    return ""
+
+
 def validate(ref, cfg, installs):
     """'' when `ref` may be stored ("" clears the pin), else why not."""
     if ref == "":

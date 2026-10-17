@@ -54,6 +54,18 @@ ctx-size = 100000
 
 Beyond these, any `llama-server` flag can be set as a key — the dashboard's Advanced UI mode (`ui_mode: "advanced"` in `config.json`) exposes the full set (200+ on current builds), discovered at runtime by parsing `llama-server --help` (`backend/argspec.py` `build_schema()`).
 
+## Embedding models
+
+A file with `embed` in its name gets `embeddings = true` from the scan, and a sibling `mmproj-*` whose projection width matches attaches as usual. That covers multimodal embedders such as [embeddinggemma-2](https://huggingface.co/ggml-org/embeddinggemma-2-GGUF): put `embeddinggemma-2-Q8_0.gguf` and `mmproj-embeddinggemma-2-Q8_0.gguf` in one folder, scan, load, and call the router's `/v1/embeddings`:
+
+```json
+{"model": "embeddinggemma-2-q8-0",
+ "input": ["task: search result | query: how do I bake bread",
+           {"content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}]}]}
+```
+
+Text and images land in one 768-dimension space, normalised. The model needs a llama.cpp build that knows its architecture (`gemma-embedding2`; current upstream llama.cpp has it, older builds and forks may not). When the checkout a model runs on predates a file's architecture, the model editor says so before you load it (`compat.build_archs()` reads the checkout's `src/llama-arch.cpp`); update llama.cpp in Build / Update.
+
 ## Context size is llama.cpp's call
 
 LlamaForge doesn't write `ctx-size`, `n-gpu-layers` or `tensor-split`. llama.cpp's `--fit` (on by default) sizes all three from the free VRAM at load; pinning any of them, globally in `[*]` or per model, turns fit off.
