@@ -872,6 +872,7 @@ def get_state(req):
     c = cfg()
     s = REGISTRY.state()
     s["gpus"] = _GPU_TELEMETRY.get()
+    s["ram"] = osplat.ram_usage()
     s["config"] = _public_config(c)
     s["platform"] = osplat.current()
     s["vllm_supported"] = VLLM_SUPPORTED
@@ -903,7 +904,7 @@ def get_schema(req):
 
 
 def get_gpus(req):
-    return 200, {"gpus": _GPU_TELEMETRY.get()}
+    return 200, {"gpus": _GPU_TELEMETRY.get(), "ram": osplat.ram_usage()}
 
 
 def get_setup(req):
