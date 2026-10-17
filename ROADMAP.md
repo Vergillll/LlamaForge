@@ -7,14 +7,12 @@ gets built next.
 
 ## Now (shipped)
 
-On `master`, not in a tagged release yet:
-
-- **Elastic VRAM** (NVIDIA): when another app needs the GPU, a loaded model
-  moves layers to the CPU instead of unloading, keeps its conversation through
-  llama.cpp's slot save/restore, and moves back once the memory is free.
-
 Released:
 
+- **Elastic VRAM** (NVIDIA, off by default): when another app needs the GPU, a
+  loaded model moves layers to the CPU instead of unloading, keeps its
+  conversation through llama.cpp's slot save/restore, and moves back once the
+  memory is free. Plus a live system RAM meter on Stats. (v0.16.4)
 - **Game mode**: unloads your models while a game runs and loads them again
   when it closes. (v0.16.3)
 - **Load progress, Thinking and Vision switches**: real load progress from

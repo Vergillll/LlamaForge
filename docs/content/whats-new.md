@@ -8,9 +8,12 @@ order: 1
 
 This page summarizes the most recent additions to LlamaForge. Each entry links to the full reference for that capability. For the longer-term direction, see the project's `ROADMAP.md`.
 
-## Unreleased: Elastic VRAM
+## v0.16.4: Elastic VRAM, live RAM
 
 - **Elastic VRAM.** When another app needs your GPU, LlamaForge moves a loaded model's layers to the CPU instead of unloading it (MoE experts first), keeps the conversation through llama.cpp's slot save and restore (after one router restart; the router gets a save folder only while Elastic is on), and moves the layers back once the memory is free. A resized model is much slower, and the dashboard row says so; click its chip to grow it back. NVIDIA only, off by default, and new: not yet tested on many machines. See [Setup > Elastic VRAM](setup.md#elastic-vram). API: `/api/elastic`, `/api/elastic/grow`.
+- **Live system RAM on Stats.** A System RAM meter sits next to the GPU memory in every look, also on machines without a GPU. "Used" leaves out cache the OS can hand back, like Task Manager's "In use". See [Stats](stats.md).
+- **A warning before an unknown architecture fails.** If a model's architecture is newer than the llama.cpp checkout that would load it, the model editor says so (and to update the build) instead of the load failing with `unknown model architecture`. Embedding models such as EmbeddingGemma now have a section in [models.ini](models-ini.md#embedding-models).
+- **Fixes.** `/v1/audio/speech` answers an unsupported `response_format` (say `mp3`) with a 400 instead of WAV under the wrong name. Ember quotes copied from PDFs match across line-break and soft hyphens. Reloading `models.ini` works on router builds that serve it on a different route (thanks @Vergillll), and `allowed values:` lists that wrap over several lines in `--help` are read whole (thanks @Vergillll).
 
 ## v0.16.3: Game mode
 
