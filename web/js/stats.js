@@ -98,6 +98,21 @@ export function renderStatsVram(payload) {
   </div>`; }).join("");
 }
 
+// System RAM beside the GPUs: what's left for offloaded layers and the OS.
+// used = total - available, so reclaimable cache doesn't count (osplat.ram_usage).
+export function renderStatsRam(payload) {
+  const ram = payload && payload.ram;
+  const total = Number(ram && ram.total);
+  if (!Number.isFinite(total) || total <= 0) return "";
+  const used = Math.min(total, Math.max(0, Number(ram.used) || 0));
+  const usedGb = (used/1024).toFixed(1), totalGb = (total/1024).toFixed(1);
+  return `<div class="stats-vram-card stats-ram-card">
+    <div class="stats-vram-head"><span>System RAM</span><span>HOST</span></div>
+    <div class="meter" role="progressbar" aria-label="System RAM used" aria-valuemin="0" aria-valuenow="${esc(used)}" aria-valuemax="${esc(total)}" aria-valuetext="${esc(usedGb)} of ${esc(totalGb)} GB used">${meter(used, total)}</div>
+    <div class="stats"><span><b>${esc(usedGb)}</b>/${esc(totalGb)} GB</span><span>FREE <b>${esc(((total-used)/1024).toFixed(1))}</b> GB</span></div>
+  </div>`;
+}
+
 export function renderTokenScale(generated, fact, open = false) {
   const total = `${fmtNum(generated)} GENERATED`;
   const accessible = `${total} is approximately ${fact.text}. ${fact.assumption}`;
@@ -117,6 +132,9 @@ export function renderTokenScale(generated, fact, open = false) {
 // is open here), so it needs the footprints in /api/state; the other skins
 // only need the GPU counters. /api/state carries those too.
 function vramView(payload) {
+  return gpuView(payload) + renderStatsRam(payload);
+}
+function gpuView(payload) {
   if (!stowage()) return renderStatsVram(payload);
   if (!payload || !Array.isArray(payload.gpus)) return `<div class="stats-vram-empty">VRAM TELEMETRY UNAVAILABLE</div>`;
   return bayPlans(payload.gpus, {...bayInputs(payload), seen: seenBoxes});
@@ -158,7 +176,7 @@ export async function loadStats(silent) {
   setHTML(v, `
     <div class="stats-body${silent ? "" : " intro"}">
     ${renderTokenScale(t.generated, fact, detailsOpen)}
-    <div class="stats-vram" id="stats-vram" aria-label="GPU VRAM usage">${hasGpuPayload ? vramView(lastGpuPayload) : `<div class="stats-vram-empty">VRAM TELEMETRY LOADING...</div>`}</div>
+    <div class="stats-vram" id="stats-vram" aria-label="GPU VRAM and system RAM usage">${hasGpuPayload ? vramView(lastGpuPayload) : `<div class="stats-vram-empty">VRAM TELEMETRY LOADING...</div>`}</div>
     <div class="gpus" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
       ${statCard("Tokens processed", fmtNum(t.tokens), [t.tokens, "num"])}
       ${statCard("Generated", fmtNum(t.generated), [t.generated, "num"])}

@@ -161,6 +161,17 @@ def available_ram_bytes():
     return 0
 
 
+def ram_usage():
+    """{"used", "total"} system RAM in MiB (the GPU rows' unit), or None when
+    either side is undetectable. Used = total - available, so reclaimable
+    page cache doesn't count as used. Never raises."""
+    total, avail = total_ram_bytes(), available_ram_bytes()
+    if total <= 0 or avail <= 0:
+        return None
+    mib = 1024 * 1024
+    return {"used": max(0, total - avail) // mib, "total": total // mib}
+
+
 def parse_vm_stat(text):
     """Free+inactive bytes from `vm_stat` output (best-effort)."""
     m = re.search(r"page size of (\d+)", text)

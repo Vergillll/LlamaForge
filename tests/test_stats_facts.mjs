@@ -103,6 +103,21 @@ test("compact VRAM cards retain text counters and escape GPU names", async () =>
   assert.equal((markup.match(/class="seg/g) || []).length, 28);
 });
 
+test("system RAM card reads like a VRAM card and hides when RAM is unknown", async () => {
+  const stats = await loadStatsModule();
+  const markup = stats.renderStatsRam({ram: {used: 24576, total: 65536}});
+  assert.match(markup, /class="stats-vram-card stats-ram-card"/);
+  assert.match(markup, /System RAM/);
+  assert.match(markup, /24\.0<\/b>\/64\.0 GB/);
+  assert.match(markup, /FREE <b>40\.0<\/b> GB/);
+  assert.match(markup, /aria-valuetext="24\.0 of 64\.0 GB used"/);
+  assert.equal((markup.match(/class="seg/g) || []).length, 28);
+  assert.equal(stats.renderStatsRam({ram: null}), "");
+  assert.equal(stats.renderStatsRam({}), "");
+  assert.equal(stats.renderStatsRam({ram: {used: 5, total: 0}}), "");
+  assert.equal(stats.renderStatsRam(null), "");
+});
+
 test("token scale exposes its full comparison and assumptions to touch and keyboard users", async () => {
   const stats = await loadStatsModule();
   const markup = stats.renderTokenScale(24_800_000, {
