@@ -419,7 +419,12 @@ button.qlink:hover{color:var(--ink-strong);border:0}
 .qv-delta{color:var(--amber-text)}
 .qv-bar{position:relative;display:flex;height:18px;border:1px solid var(--hair);border-radius:var(--r-xs);overflow:hidden;background:var(--panel)}
 .qv-bar>span:not(.qv-cap){height:100%}
+.qv-bar>.qv-res,.qv-bar>.qv-past{position:absolute;top:0;bottom:0}
 .qv-cap{position:absolute;top:0;bottom:0;width:3px;margin-left:-1px;background:var(--ink-strong);box-shadow:0 0 0 1px var(--red)}
+.qv-res{background:repeating-linear-gradient(45deg,color-mix(in srgb,var(--amber) 30%,transparent) 0 3px,transparent 3px 7px)}
+.qv-past{background:repeating-linear-gradient(135deg,var(--red) 0 5px,color-mix(in srgb,var(--red) 70%,var(--panel)) 5px 7px)}
+.qv-goto{font:inherit;color:var(--amber-text);background:none;border:none;padding:0;cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px}
+.qv-goto:hover{text-decoration-style:solid}
 .qv-w{background:var(--amber)}
 .qv-kv{background:var(--cyan)}
 .qv-ex{background:color-mix(in srgb,var(--cyan) 55%,var(--panel))}

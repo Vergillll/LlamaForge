@@ -1455,9 +1455,14 @@ def post_model_predict(req):
                     size_bytes=slotctl._size(s_r.get("model")) or None,
                     mmproj_bytes=slotctl._size(s_r.get("mmproj")) if s_r.get("mmproj") else 0))
         others = max(0, g["used"] - ours)
-        budget = g["total"] - others
+        # the limit keeps the Multi-model headroom free, as the slot planner does
+        head = cfg().get("slot_headroom_mib")
+        head = head if _v_int(0, 32768)(head) is not None else slots.DEFAULT_HEADROOM_MIB
+        limit = g["total"] - head
+        budget = max(0, limit - others)
         out["gpu"] = {"name": g.get("name", ""), "total_mib": g["total"],
-                      "others_mib": others, "budget_mib": budget}
+                      "others_mib": others, "headroom_mib": head, "limit_mib": limit,
+                      "budget_mib": budget}
         out["fits"] = footprint.gpu_total(p_new) <= budget
         if lay:
             n_layer = int((lay.get("kv") or {}).get("block_count") or 0)

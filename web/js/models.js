@@ -10,7 +10,7 @@
 import { $, $$, esc, setHTML, api, toast, meter, motionOK, askYes, askText } from "./core.js";
 import { S, models as modelRows, config as cfgOf } from "./state.js";
 import { on, emit } from "./bus.js";
-import { activeTab } from "./ui.js";
+import { activeTab, switchTab } from "./ui.js";
 import * as slots from "./slots.js";
 import * as elastic from "./elastic.js";
 import { bayPlans, bayInputs } from "./bays.js";
@@ -450,6 +450,19 @@ function syncEditor(row, m) {
     if (!el) continue;
     const sig = build(m);
     if (row[key] !== sig) { setHTML(el, sig); row[key] = sig; }
+  }
+  // the estimate's limit is the Multi-model headroom: a change in Setup moves it
+  const head = (((S.STATE || {}).slots || {}).settings || {}).slot_headroom_mib;
+  if (row._head !== head) { if (row._head !== undefined) scheduleVram(row, 0); row._head = head; }
+}
+// The estimate's "kept free" link: the Multi-model setting the limit comes
+// from. Setup draws after its own fetches, so wait for the field.
+async function gotoHeadroom() {
+  switchTab("setup");
+  for (let i = 0; i < 50; i++) {
+    const inp = $("#mm-head");
+    if (inp) { inp.scrollIntoView({block: "center"}); inp.focus(); inp.select(); return; }
+    await new Promise(r => setTimeout(r, 100));
   }
 }
 
@@ -1052,6 +1065,7 @@ export function initModels() {
     if (epChip) { e.stopPropagation(); navigator.clipboard.writeText(epChip.dataset.ep).then(() => toast("Endpoint copied","ok")); return; }
     const favBtn = e.target.closest("#view-models [data-fav]");
     if (favBtn) { e.stopPropagation(); toggleFav(favBtn.dataset.fav); return; }
+    if (e.target.closest("#view-models [data-goto-headroom]")) { e.stopPropagation(); gotoHeadroom(); return; }
     const elGrow = e.target.closest("#view-models [data-elastic-grow]");
     if (elGrow) {
       e.stopPropagation(); elGrow.disabled = true;

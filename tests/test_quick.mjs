@@ -177,34 +177,60 @@ test("the change summary reads like the editor talks", () => {
 const PRED = {predicted: {total_mib: 14336, weights_mib: 11264, kv_mib: 342, exact_mib: 248,
                           mmproj_mib: 1089, compute_mib: 1393, ram_mib: 7354, ctx: 64000, ctx_slot: 64000},
               saved: {total_mib: 13926}, confident: true, notes: [], fit_on: false,
-              gpu: {name: "RTX <5070>", total_mib: 16303, others_mib: 842, budget_mib: 15461},
+              gpu: {name: "RTX <5070>", total_mib: 16303, others_mib: 842, headroom_mib: 512,
+                    limit_mib: 15791, budget_mib: 14949},
               fits: true, limits: {ctx: 190464, layers: 11}, measured_mib: null};
 
-test("the VRAM block: total, the delta from unsaved edits, what is left free", () => {
+const left = (html, cls) => { const m = html.match(new RegExp(`class="${cls}" style="left:([\\d.]+)%`)); return m && +m[1]; };
+
+test("the VRAM block: total, the delta from unsaved edits, what is left free and before the limit", () => {
   const html = q.vramBlock(PRED);
-  assert.match(html, /≈ 14\.0 GiB <span class="qv-delta">\(\+0\.4 from unsaved changes\)<\/span> · 1\.1 GiB free/);
-  assert.match(html, /Weights 11\.0.*KV 0\.3.*Exact tail 0\.2.*Vision 1\.1.*Compute 1\.4.*Other apps 0\.8/s);
+  assert.match(html, /≈ 14\.0 GiB <span class="qv-delta">\(\+0\.4 from unsaved changes\)<\/span> · 1\.1 GiB free · 0\.6 GiB to the limit/);
+  assert.match(html, /Other apps 0\.8.*Weights 11\.0.*KV 0\.3.*Exact tail 0\.2.*Vision 1\.1.*Compute 1\.4/s);
   assert.match(html, /RTX &lt;5070&gt;/);
   assert.doesNotMatch(html, /RTX <5070>/);
   assert.match(html, /· predicted/);
-  assert.doesNotMatch(html, /qv-cap/);
+  assert.match(html, /class="qv-sum">/);
+  // the limit: a tick at card less kept-free, the kept-free room after it, nothing past it
+  assert.equal(left(html, "qv-cap"), 96.86);                    // 15791 of 16303
+  assert.equal(left(html, "qv-res"), 96.86);
+  assert.doesNotMatch(html, /qv-past/);
+  assert.match(html, /data-goto-headroom[^>]*>kept free 0\.5 GiB — Setup → Multi-model<\/button>/);
 });
 
-test("over the budget with everything pinned: won't fit, with the line where it ends", () => {
+test("past the limit but on the card: red from the tick, the rest of the heading says by how much", () => {
+  const html = q.vramBlock({...PRED, predicted: {...PRED.predicted, total_mib: 15300}});
+  assert.match(html, /class="qv-sum over"/);
+  assert.match(html, /0\.2 GiB free · −0\.3 GiB to the limit/);
+  assert.equal(left(html, "qv-past"), 96.86);
+  assert.match(html, /class="qv-past" style="left:96\.86%;width:2\.15%"/);   // 351 MiB past
+  assert.doesNotMatch(html, /won&#39;t fit/);
+});
+
+test("over the card with everything pinned: won't fit, and how far past the limit", () => {
   const html = q.vramBlock({...PRED, predicted: {...PRED.predicted, total_mib: 16384}});
   assert.match(html, /class="qv-sum over"/);
-  assert.match(html, /over by 0\.9 GiB - won&#39;t fit/);     // esc() takes the apostrophe too
+  assert.match(html, /over by 0\.9 GiB - won&#39;t fit · −1\.4 GiB to the limit/);   // esc() takes the apostrophe too
   assert.match(html, /class="qv-cap"/);
+  assert.match(html, /class="qv-past"/);
 });
 
-test("over the budget with fit still in charge: no alarm, fit cuts back", () => {
+test("the tick moves with the kept-free setting, and a rounded zero has no sign", () => {
+  const at = head => left(q.vramBlock({...PRED, gpu: {...PRED.gpu, headroom_mib: head,
+    limit_mib: 16303 - head, budget_mib: 16303 - head - 842}}), "qv-cap");
+  assert.ok(at(2048) < at(512) && at(512) < at(0));
+  assert.equal(at(0), 100);
+  assert.match(q.vramBlock({...PRED, predicted: {...PRED.predicted, total_mib: 14970}}), / 0\.0 GiB to the limit/);
+});
+
+test("over the card with fit still in charge: no alarm, fit cuts back", () => {
   const r = {...PRED, fit_on: true, predicted: {...PRED.predicted, total_mib: 30000},
              notes: ["context left to fit: counted at the model's full trained length; fit shortens it at load if it doesn't fit"]};
   const html = q.vramBlock(r);
   assert.match(html, /class="qv-sum soft"/);
   assert.match(html, /fit cuts back at load/);
   assert.match(html, /estimate uncertain/);
-  assert.doesNotMatch(html, /won&#39;t fit|qv-cap/);
+  assert.doesNotMatch(html, /won&#39;t fit/);
 });
 
 test("no delta under 51 MiB, a measured load when there is one, and an error stays readable", () => {

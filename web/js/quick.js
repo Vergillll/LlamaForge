@@ -332,39 +332,55 @@ const PARTS = [["weights_mib", "Weights", "w"], ["kv_mib", "KV", "kv"], ["exact_
                ["mmproj_mib", "Vision", "mm"], ["compute_mib", "Compute", "cp"]];
 
 // the estimate under the Load strip: what the values on screen would put on
-// the GPU, against what is free of other apps
+// the GPU, against what other apps leave free. The limit is the card less the
+// Multi-model "VRAM kept free per GPU" (the slot planner keeps the same room);
+// the sliders' zones are measured against it too.
 export function vramBlock(r) {
   if (!r || r.error || !r.predicted)
     return `<span class="qmuted">VRAM estimate unavailable${r && r.error ? `: ${esc(r.error)}` : ""}</span>`;
   const p = r.predicted, g = r.gpu, total = p.total_mib;
   const delta = r.saved ? total - r.saved.total_mib : 0;
   const leftToFit = r.fit_on && (r.notes || []).some(n => /left to fit/.test(n));
-  let verdict = "", over = false;
+  let verdict = "", over = false, soft = false;
   if (g) {
-    const room = g.budget_mib - total;
-    over = room < 0;
-    verdict = !over ? `${gib(room)} GiB free`
-      : leftToFit ? `${gib(-room)} GiB more than free: fit cuts back at load`
-      : `over by ${gib(-room)} GiB - won't fit`;
+    const free = g.total_mib - g.others_mib - total;          // what the card would have left
+    const toLimit = g.limit_mib - g.others_mib - total;       // what is left before the kept-free room
+    over = toLimit < 0;
+    soft = free < 0 && leftToFit;
+    const limitText = `${over && gib(-toLimit) !== "0.0" ? "−" : ""}${gib(Math.abs(toLimit))} GiB to the limit`;
+    verdict = soft ? `${gib(-free)} GiB more than free: fit cuts back at load`
+      : free < 0 ? `over by ${gib(-free)} GiB - won't fit · ${limitText}`
+      : `${gib(free)} GiB free · ${limitText}`;
   }
-  const scale = Math.max(total, g ? g.total_mib : total) || 1;
+  // other apps first, then the estimate: whatever of it crosses the limit is its end
+  const others = g ? g.others_mib : 0;
+  const scale = Math.max(others + total, g ? g.total_mib : 0) || 1;
   const pct = mib => (mib / scale * 100).toFixed(2);
-  const segs = PARTS.map(([k, , c]) => p[k] ? `<span class="qv-${c}" style="width:${pct(p[k])}%"></span>` : "").join("")
-    + (g && g.others_mib ? `<span class="qv-ot" style="width:${pct(g.others_mib)}%"></span>` : "");
-  const cap = g && over && !leftToFit ? `<span class="qv-cap" style="left:${pct(g.budget_mib)}%"></span>` : "";
-  const legend = PARTS.filter(([k]) => p[k]).map(([k, label, c]) =>
+  const segs = (others ? `<span class="qv-ot" style="width:${pct(others)}%"></span>` : "")
+    + PARTS.map(([k, , c]) => p[k] ? `<span class="qv-${c}" style="width:${pct(p[k])}%"></span>` : "").join("");
+  let marks = "";
+  if (g) {
+    const lim = g.limit_mib, from = Math.max(lim, others), end = others + total;
+    marks = (g.total_mib > lim ? `<span class="qv-res" style="left:${pct(lim)}%;width:${pct(g.total_mib - lim)}%"></span>` : "")
+      + (end > from ? `<span class="qv-past" style="left:${pct(from)}%;width:${pct(end - from)}%"></span>` : "")
+      + `<span class="qv-cap" style="left:${pct(lim)}%"></span>`;
+  }
+  const legend = (others ? `<span><i class="qv-sw qv-ot"></i>Other apps ${gib(others)}</span>` : "")
+    + PARTS.filter(([k]) => p[k]).map(([k, label, c]) =>
     `<span><i class="qv-sw qv-${c}"></i>${label} ${gib(p[k])}</span>`).join("")
-    + (g && g.others_mib ? `<span><i class="qv-sw qv-ot"></i>Other apps ${gib(g.others_mib)}</span>` : "");
+    + (g ? `<span><i class="qv-sw qv-res"></i><button type="button" class="qv-goto" data-goto-headroom
+        title="the limit leaves this much free on the card: Setup, Multi-model, VRAM kept free per GPU">kept free ${gib(g.headroom_mib)} GiB — Setup → Multi-model</button></span>` : "");
   // the store measures loads of the saved settings, so that is what it is set against
   const meas = r.saved ? `<div class="qv-meas">Saved settings: predicted ${gib(r.saved.total_mib)} GiB / ${r.measured_mib
     ? `measured ${gib(r.measured_mib)} GiB on the last load` : "not measured yet: the next load measures it"}</div>` : "";
   const sure = r.confident && !leftToFit ? "predicted" : "estimate uncertain";
   const notes = (r.notes || []).map(n => `<div class="qmuted">${esc(n)}</div>`).join("");
   return `<div class="qv-head"><span class="qlab">VRAM${g ? ` · ${esc(g.name)} ${gib(g.total_mib)} GiB` : ""}</span>
-    <span class="qv-sum${over ? (leftToFit ? " soft" : " over") : ""}">≈ ${gib(total)} GiB${Math.abs(delta) >= 51
+    <span class="qv-sum${soft ? " soft" : over ? " over" : ""}">≈ ${gib(total)} GiB${Math.abs(delta) >= 51
       ? ` <span class="qv-delta">(${delta > 0 ? "+" : "−"}${gib(Math.abs(delta))} from unsaved changes)</span>` : ""}${verdict ? ` · ${esc(verdict)}` : ""}
     <span class="qmuted">· ${sure}</span></span></div>
-    <div class="qv-bar" role="img" aria-label="${esc(`Predicted VRAM ${gib(total)} of ${g ? gib(g.total_mib) : "?"} GiB`)}">${segs}${cap}</div>
+    <div class="qv-bar" role="img" aria-label="${esc(`Predicted VRAM ${gib(total)} of ${g ? gib(g.total_mib) : "?"} GiB${
+      g ? `, limit ${gib(g.limit_mib)} GiB` : ""}`)}">${segs}${marks}</div>
     <div class="qv-legend">${legend}</div>${meas}${notes}`;
 }
 

@@ -144,7 +144,8 @@ class Limits(unittest.TestCase):
 
 
 class Endpoint(unittest.TestCase):
-    def _call(self, settings, section=None, runtime=None, gpus=None, measured=None, status="unloaded"):
+    def _call(self, settings, section=None, runtime=None, gpus=None, measured=None, status="unloaded",
+              headroom=1000):
         section = section or {"model": "F:/m.gguf", "ctx-size": "8192", "parallel": "1", "fit": "off"}
         ini = {"*": {}, "m": section}
         rows = {"models": [{"id": "m", "status": status, "in_ini": True,
@@ -152,7 +153,9 @@ class Endpoint(unittest.TestCase):
         gpus = gpus if gpus is not None else [{"index": 0, "name": "GPU <0>", "used": 1000, "total": 16000}]
         store = mock.Mock()
         store.measured.return_value = measured or {}
+        conf = dict(routes.config.DEFAULTS, slot_headroom_mib=headroom)
         with mock.patch.object(routes.config, "read_sections", return_value=ini), \
+             mock.patch.object(routes, "cfg", return_value=conf), \
              mock.patch.object(routes, "_layout", return_value=dense()), \
              mock.patch.object(routes, "model_state", return_value=rows), \
              mock.patch.object(routes._GPU_TELEMETRY, "get", return_value=gpus), \
@@ -166,11 +169,24 @@ class Endpoint(unittest.TestCase):
         self.assertEqual(out["predicted"]["ctx"], 16384)
         self.assertEqual(out["saved"]["ctx"], 8192)
         self.assertGreater(out["predicted"]["total_mib"], out["saved"]["total_mib"])
-        self.assertEqual(out["gpu"], {"name": "GPU <0>", "total_mib": 16000,
-                                      "others_mib": 1000, "budget_mib": 15000})
+        self.assertEqual(out["gpu"], {"name": "GPU <0>", "total_mib": 16000, "others_mib": 1000,
+                                      "headroom_mib": 1000, "limit_mib": 15000, "budget_mib": 14000})
         self.assertTrue(out["fits"])
         self.assertEqual(set(out["limits"]), {"ctx", "layers"})
         self.assertEqual(out["notes"], [])
+
+    def test_the_limit_keeps_the_multi_model_headroom_free(self):
+        busy = [{"index": 0, "name": "g", "used": 11000, "total": 16000}]   # 5000 MiB not other apps'
+        roomy, tight = self._call({}, headroom=0, gpus=busy), self._call({}, headroom=2048, gpus=busy)
+        self.assertEqual((roomy["gpu"]["limit_mib"], roomy["gpu"]["budget_mib"]), (16000, 5000))
+        self.assertEqual((tight["gpu"]["limit_mib"], tight["gpu"]["budget_mib"]), (13952, 2952))
+        self.assertGreater(roomy["limits"]["ctx"], tight["limits"]["ctx"])     # the zones move with it
+        # an unreadable setting falls back to the planner's default
+        self.assertEqual(self._call({}, headroom="lots")["gpu"]["headroom_mib"], slots.DEFAULT_HEADROOM_MIB)
+        # other apps already past the limit leave no budget, not a negative one
+        out = self._call({}, headroom=4096, gpus=[{"index": 0, "name": "g", "used": 13000, "total": 16000}])
+        self.assertEqual(out["gpu"]["budget_mib"], 0)
+        self.assertFalse(out["fits"])
 
     def test_the_breakdown_adds_up(self):
         p = self._call({})["predicted"]
