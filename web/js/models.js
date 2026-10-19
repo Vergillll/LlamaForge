@@ -231,12 +231,13 @@ function editor(m) {
     </div>
     <div class="ed-note">${editorNote(m)}</div>`;
 }
+// Search and Only set narrow the knob grid (.fld). The strips above it (.qf,
+// .qrow) are always shown whole: they are the knobs people turn most, and a
+// search for something else must not take them away.
 function applyKnobFilter(root) {
-  $$(".fld,.qf,.qrow", root).forEach(f => {
-    if (f.dataset.desc == null) return;      // a field inside a strip row is matched by its row
+  $$(".fld", root).forEach(f => {
     const hitQ = !kquery || f.dataset.desc.includes(kquery);
-    // Only set narrows the grid; the strips stay whole
-    const hitSet = !onlySet || f.classList.contains("set") || !f.classList.contains("fld");
+    const hitSet = !onlySet || f.classList.contains("set");
     f.style.display = (hitQ && hitSet) ? "" : "none";
   });
 }

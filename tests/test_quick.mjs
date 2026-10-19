@@ -229,3 +229,21 @@ test("the Load strip leaves room for the estimate and hides empty zones", () => 
   assert.match(html, /data-qvram aria-live="polite"/);
   assert.equal((html.match(/data-qzone="(ctx|layers)" aria-hidden="true" hidden/g) || []).length, 2);
 });
+
+test("the strips never use the knob grid's field class, so a knob search can't hide them", () => {
+  // models.js filters `.fld` on a search or Only set; strip fields are .qf / .qrow
+  const html = q.loadStrip(model({"n-cpu-moe": "12", fit: "off", seed: "42"}), MOE, SCHEMA, {})
+    + q.thinkingStrip(model({mmproj: "p.gguf"}), MOE, SCHEMA)
+    + q.samplingStrip(model({seed: "42"}), SCHEMA);
+  assert.match(html, /class="qf/);
+  assert.match(html, /class="qrow/);
+  const classes = [...html.matchAll(/class="([^"]*)"/g)].flatMap(m => m[1].split(/\s+/));
+  assert.ok(!classes.includes("fld"), "a strip element has class fld");
+});
+
+test("the knob search and Only set select the grid's fields only", async () => {
+  const src = await readFile(new URL("../web/js/models.js", import.meta.url), "utf8");
+  const body = src.match(/function applyKnobFilter\(root\) \{[\s\S]*?\n\}/);
+  assert.ok(body, "applyKnobFilter not found");
+  assert.deepEqual([...body[0].matchAll(/\$\$\("([^"]*)"/g)].map(m => m[1]), [".fld"]);
+});
